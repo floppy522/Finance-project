@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - backend
+      - data
 
   api:
     build:
@@ -23,7 +23,8 @@ services:
       db:
         condition: service_healthy
     networks:
-      - backend
+      - data
+      - app
 
   web:
     build:
@@ -31,7 +32,7 @@ services:
     image: moneyflow-web:release-0
     restart: unless-stopped
     networks:
-      - backend
+      - app
 
   caddy:
     image: caddy:2.10-alpine
@@ -51,12 +52,11 @@ services:
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
     networks:
-      - edge
-      - backend
+      - app
 
 networks:
-  edge:
-  backend:
+  app:
+  data:
     internal: true
 
 volumes:

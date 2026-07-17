@@ -4,7 +4,14 @@
 
     log {
         output file /var/log/caddy/access.log
-        format json
+        format filter {
+            wrap json
+            request>headers>X-Telegram-Bot-Api-Secret-Token delete
+            request>headers>Referer delete
+            request>uri query {
+                delete token
+            }
+        }
     }
 
     header {
@@ -14,7 +21,7 @@
         Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     }
 
-    @api path /api/* /telegram/*
+    @api path /api/* /telegram/* /health
     handle @api {
         reverse_proxy api:8000
     }

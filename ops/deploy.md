@@ -4,57 +4,97 @@ The commands below assume a single Debian/Ubuntu host, the repository at
 `/opt/moneyflow`, DNS already pointing at the host, and root access. Run them
 from `/opt/moneyflow` unless a step says otherwise.
 
-## 1. Install and configure secrets
+## 1. Generate and validate secrets
 
-Install Docker Engine with the Compose plugin and install `age`. Create the
-backup directory and a root-only environment file:
+Install Docker Engine with the Compose plugin, `age`, and OpenSSL. Run the
+following block in Bash. It disables shell tracing, reads the bot token without
+terminal echo, generates URL-safe hexadecimal secrets, and creates `.env`
+atomically only when it does not already exist. A rerun validates the existing
+file without rewriting or truncating it.
 
-```sh
+```bash
+set -euo pipefail
+set +x
+umask 077
 install -d -m 0755 /opt/moneyflow
 install -d -m 0700 /var/lib/moneyflow-backups /root/.config/moneyflow
-install -m 0600 /dev/null /opt/moneyflow/.env
-```
 
-Populate `/opt/moneyflow/.env` with shell-safe values (quote values that
-contain punctuation). Percent-encode the database password inside
-`DATABASE_URL`.
+if [[ ! -e /root/.config/moneyflow/backup.agekey ]]; then
+    age-keygen -o /root/.config/moneyflow/backup.agekey
+fi
+chown root:root /root/.config/moneyflow/backup.agekey
+chmod 0600 /root/.config/moneyflow/backup.agekey
 
-```dotenv
-MONEYFLOW_DOMAIN=money.example.com
-POSTGRES_DB=moneyflow
-POSTGRES_USER=moneyflow
-POSTGRES_PASSWORD=replace-with-32-random-bytes
-DATABASE_URL=postgresql+asyncpg://moneyflow:URL_ENCODED_PASSWORD@db:5432/moneyflow
-TELEGRAM_BOT_TOKEN=replace-with-bot-token
-TELEGRAM_WEBHOOK_SECRET=replace-with-32-random-bytes
-AUTHORIZED_TELEGRAM_USER_ID=123456789
-PUBLIC_WEB_URL=https://money.example.com
-SESSION_COOKIE_SECURE=true
-BACKUP_DIR=/var/lib/moneyflow-backups
-AGE_RECIPIENT=replace-after-key-generation
-AGE_IDENTITY_FILE=/root/.config/moneyflow/backup.agekey
-```
+if [[ ! -e /opt/moneyflow/.env ]]; then
+    read -r -p "Production domain (for example, money.example.com): " MONEYFLOW_DOMAIN
+    read -r -p "Authorized Telegram user ID: " AUTHORIZED_TELEGRAM_USER_ID
+    read -r -s -p "Telegram bot token (input hidden): " TELEGRAM_BOT_TOKEN
+    printf '\n'
 
-Re-assert permissions after editing:
+    [[ "$MONEYFLOW_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]
+    [[ "$AUTHORIZED_TELEGRAM_USER_ID" =~ ^[1-9][0-9]*$ ]]
+    [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
 
-```sh
+    POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+    TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+    AGE_RECIPIENT="$(age-keygen -y /root/.config/moneyflow/backup.agekey)"
+    env_tmp="$(mktemp /opt/moneyflow/.env.XXXXXX)"
+    cleanup_env() { rm -f -- "$env_tmp"; }
+    trap cleanup_env EXIT HUP INT TERM
+
+    {
+        printf 'MONEYFLOW_DOMAIN=%s\n' "$MONEYFLOW_DOMAIN"
+        printf 'POSTGRES_DB=moneyflow\n'
+        printf 'POSTGRES_USER=moneyflow\n'
+        printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+        printf 'DATABASE_URL=postgresql+asyncpg://moneyflow:%s@db:5432/moneyflow\n' "$POSTGRES_PASSWORD"
+        printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
+        printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$TELEGRAM_WEBHOOK_SECRET"
+        printf 'AUTHORIZED_TELEGRAM_USER_ID=%s\n' "$AUTHORIZED_TELEGRAM_USER_ID"
+        printf 'PUBLIC_WEB_URL=https://%s\n' "$MONEYFLOW_DOMAIN"
+        printf 'SESSION_COOKIE_SECURE=true\n'
+        printf 'BACKUP_DIR=/var/lib/moneyflow-backups\n'
+        printf 'AGE_RECIPIENT=%s\n' "$AGE_RECIPIENT"
+        printf 'AGE_IDENTITY_FILE=/root/.config/moneyflow/backup.agekey\n'
+    } >"$env_tmp"
+    chmod 0600 "$env_tmp"
+    ln -- "$env_tmp" /opt/moneyflow/.env
+    cleanup_env
+    trap - EXIT HUP INT TERM
+    unset POSTGRES_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET AGE_RECIPIENT
+fi
+
 chown root:root /opt/moneyflow/.env
 chmod 0600 /opt/moneyflow/.env
+
+set -a
+. /opt/moneyflow/.env
+set +a
+: "${MONEYFLOW_DOMAIN:?missing MONEYFLOW_DOMAIN}"
+: "${POSTGRES_PASSWORD:?missing POSTGRES_PASSWORD}"
+: "${DATABASE_URL:?missing DATABASE_URL}"
+: "${TELEGRAM_BOT_TOKEN:?missing TELEGRAM_BOT_TOKEN}"
+: "${TELEGRAM_WEBHOOK_SECRET:?missing TELEGRAM_WEBHOOK_SECRET}"
+: "${AUTHORIZED_TELEGRAM_USER_ID:?missing AUTHORIZED_TELEGRAM_USER_ID}"
+: "${AGE_RECIPIENT:?missing AGE_RECIPIENT}"
+[[ "$MONEYFLOW_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]
+[[ "$AUTHORIZED_TELEGRAM_USER_ID" =~ ^[1-9][0-9]*$ ]]
+[[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
+[[ "$POSTGRES_PASSWORD" =~ ^[[:xdigit:]]{64}$ ]]
+[[ "$TELEGRAM_WEBHOOK_SECRET" =~ ^[[:xdigit:]]{64}$ ]]
+[[ "$DATABASE_URL" == "postgresql+asyncpg://moneyflow:${POSTGRES_PASSWORD}@db:5432/moneyflow" ]]
+[[ "$PUBLIC_WEB_URL" == "https://${MONEYFLOW_DOMAIN}" ]]
+[[ "$AGE_RECIPIENT" == "$(age-keygen -y /root/.config/moneyflow/backup.agekey)" ]]
+unset POSTGRES_PASSWORD DATABASE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
 ```
 
-## 2. Generate the offline backup key
+The generated database password contains only hexadecimal characters, so it
+is already safe in the URL user-information component and needs no ambiguous
+manual percent-encoding step. Copy the age identity file to encrypted offline
+storage, verify that copy, and never place it in the repository or application
+containers.
 
-```sh
-age-keygen -o /root/.config/moneyflow/backup.agekey
-chmod 0600 /root/.config/moneyflow/backup.agekey
-age-keygen -y /root/.config/moneyflow/backup.agekey
-```
-
-Copy the printed public recipient into `AGE_RECIPIENT` in `.env`. Copy the
-identity file to encrypted offline storage, verify that copy, and do not place
-the identity in the repository or application containers.
-
-## 3. Build and start
+## 2. Build and start
 
 Record the currently deployed revision before changing it, then check out the
 reviewed release revision:
@@ -84,25 +124,39 @@ test "$(curl --silent --output /dev/null --write-out '%{http_code}' https://mone
 Replace `money.example.com` with `MONEYFLOW_DOMAIN` in literal verification
 commands.
 
-## 4. Register the Telegram webhook
+## 3. Register the Telegram webhook
 
-Load the root-only environment without printing it. Passing the API URL and
-webhook secret through curl's standard-input configuration keeps them out of
-the process list and shell history; response bodies are discarded.
+Load the root-only environment with tracing disabled. The temporary curl
+configuration and value file are mode `0600`; this keeps the bot token and
+webhook secret out of command arguments, shell history, terminal output, and
+the response log. Both form values are URL-encoded by curl.
 
-```sh
+```bash
+set -euo pipefail
+set +x
+umask 077
 set -a
 . /opt/moneyflow/.env
 set +a
-curl --silent --show-error --fail --output /dev/null --config - <<EOF
-url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
-data = "url=https://${MONEYFLOW_DOMAIN}/telegram/webhook"
-data = "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
-EOF
+telegram_curl_config="$(mktemp)"
+telegram_secret_file="$(mktemp)"
+cleanup_webhook() {
+    rm -f -- "$telegram_curl_config" "$telegram_secret_file"
+}
+trap cleanup_webhook EXIT HUP INT TERM
+printf 'url = "https://api.telegram.org/bot%s/setWebhook"\n' \
+    "$TELEGRAM_BOT_TOKEN" >"$telegram_curl_config"
+printf '%s' "$TELEGRAM_WEBHOOK_SECRET" >"$telegram_secret_file"
+curl --silent --show-error --fail --output /dev/null \
+    --config "$telegram_curl_config" \
+    --data-urlencode "url=https://${MONEYFLOW_DOMAIN}/telegram/webhook" \
+    --data-urlencode "secret_token@${telegram_secret_file}"
+cleanup_webhook
+trap - EXIT HUP INT TERM
 unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET POSTGRES_PASSWORD DATABASE_URL
 ```
 
-## 5. Verify the firewall and private database
+## 4. Verify the firewall and private database
 
 Permit SSH before enabling the firewall. Only ports 22, 80, and 443 may be
 reachable from the Internet; PostgreSQL, API port 8000, and web port 80 are
@@ -123,7 +177,7 @@ From a second host, verify that HTTPS works and ports 5432 and 8000 refuse
 connections. Also verify that neither `docker compose ps` nor `ss -lntup`
 shows host-published database, API, or web ports.
 
-## 6. Install and test backups
+## 5. Install and test backups
 
 ```sh
 install -m 0644 ops/systemd/moneyflow-backup.service /etc/systemd/system/
@@ -165,7 +219,8 @@ git checkout --detach "$PREVIOUS_REVISION"
 docker compose -f compose.prod.yaml --env-file .env build
 docker compose -f compose.prod.yaml --env-file .env up -d --remove-orphans
 docker compose -f compose.prod.yaml --env-file .env ps
-curl --fail --silent --show-error --output /dev/null https://money.example.com/health
+curl --fail --silent --show-error https://money.example.com/health \
+    | grep -Fxq '{"status":"ok"}'
 unset PREVIOUS_REVISION
 ```
 
