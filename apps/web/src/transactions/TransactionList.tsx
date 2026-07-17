@@ -15,6 +15,7 @@ export function TransactionList() {
   const transactions = useQuery({
     queryKey: ["transactions"],
     queryFn: fetchTransactions,
+    retry: (failureCount, error) => error.message !== UNAUTHORIZED && failureCount < 3,
   });
 
   if (transactions.isPending) {

@@ -5,9 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TransactionList } from "./TransactionList";
 
 function renderList() {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const client = new QueryClient();
 
   return render(
     <QueryClientProvider client={client}>
@@ -58,4 +56,5 @@ test("shows login instruction on 401", async () => {
   expect(
     await screen.findByText("Запросите новую ссылку командой /login"),
   ).toBeInTheDocument();
+  expect(fetch).toHaveBeenCalledTimes(1);
 });

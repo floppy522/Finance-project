@@ -2,24 +2,44 @@ import { useEffect, useState } from "react";
 
 import { exchangeLoginToken } from "../api/client";
 
+let loginExchange: Promise<void> | undefined;
+
 export function LoginCallback() {
   const [status, setStatus] = useState<"loading" | "error">("loading");
 
   useEffect(() => {
     const url = new URL(window.location.href);
-    const token = url.searchParams.get("token");
+    if (!loginExchange) {
+      const token = url.searchParams.get("token");
 
-    // Do not leave a one-time credential in the browser history.
-    window.history.replaceState(null, "", `${url.pathname}${url.hash}`);
+      // Do not leave a one-time credential in the browser history.
+      window.history.replaceState(null, "", `${url.pathname}${url.hash}`);
 
-    if (!token) {
-      setStatus("error");
-      return;
+      if (!token) {
+        setStatus("error");
+        return;
+      }
+
+      loginExchange = exchangeLoginToken(token);
     }
 
-    void exchangeLoginToken(token)
-      .then(() => window.location.replace("/"))
-      .catch(() => setStatus("error"));
+    const currentExchange = loginExchange;
+    let active = true;
+
+    void currentExchange.then(
+      () => {
+        if (loginExchange === currentExchange) loginExchange = undefined;
+        if (active) window.location.replace("/");
+      },
+      () => {
+        if (loginExchange === currentExchange) loginExchange = undefined;
+        if (active) setStatus("error");
+      },
+    );
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   if (status === "loading") {
