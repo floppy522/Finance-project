@@ -8,19 +8,20 @@ const e2eDirectory = fileURLToPath(new URL(".", import.meta.url));
 const apiDirectory = path.resolve(e2eDirectory, "../../apps/api");
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
-  "postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow";
+  "postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_e2e";
 const pythonEnvironment = {
   ...process.env,
   AUTHORIZED_TELEGRAM_USER_ID: "1",
   DATABASE_URL: databaseUrl,
+  ENVIRONMENT: "test",
 };
 
-function runPython(arguments_: string[]): string {
+function runApi(command: string, arguments_: string[], cwd = e2eDirectory): string {
   const result = spawnSync(
     "uv",
-    ["run", "--project", apiDirectory, "python", ...arguments_],
+    ["run", "--project", apiDirectory, command, ...arguments_],
     {
-      cwd: e2eDirectory,
+      cwd,
       encoding: "utf8",
       env: pythonEnvironment,
     },
@@ -33,6 +34,10 @@ function runPython(arguments_: string[]): string {
     throw new Error(`Python helper failed: ${result.stderr.trim()}`);
   }
   return result.stdout.trim();
+}
+
+function runPython(arguments_: string[]): string {
+  return runApi("python", arguments_);
 }
 
 function telegramUpdate(updateId: number, text: string) {
@@ -49,6 +54,8 @@ function telegramUpdate(updateId: number, text: string) {
 }
 
 test.beforeAll(() => {
+  runPython(["support/prepare_database.py"]);
+  runApi("alembic", ["upgrade", "head"], apiDirectory);
   runPython(["-m", "moneyflow.bootstrap"]);
 });
 
@@ -59,6 +66,7 @@ test("authorized Telegram expense is idempotent, visible, and uses a one-time lo
 }) => {
   const loginToken = runPython(["support/issue_login_token.py"]);
   expect(loginToken).toMatch(/^[A-Za-z0-9_-]+$/);
+  expect(Number(runPython(["support/count_transactions.py"]))).toBe(0);
 
   const update = telegramUpdate(7001, "кофе 350");
   for (let delivery = 0; delivery < 2; delivery += 1) {
@@ -68,6 +76,7 @@ test("authorized Telegram expense is idempotent, visible, and uses a one-time lo
     });
     expect(response.status()).toBe(204);
   }
+  expect(Number(runPython(["support/count_transactions.py"]))).toBe(1);
 
   const loginUrl = `http://127.0.0.1:5173/login?token=${encodeURIComponent(loginToken)}`;
   await page.goto(loginUrl);
@@ -75,7 +84,7 @@ test("authorized Telegram expense is idempotent, visible, and uses a one-time lo
 
   const matchingRow = page
     .getByRole("row")
-    .filter({ hasText: "Кофе" })
+    .filter({ hasText: "кофе" })
     .filter({ hasText: "350,00 ₽" });
   await expect(matchingRow).toHaveCount(1);
 

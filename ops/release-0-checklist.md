@@ -1,5 +1,6 @@
 # Release 0 production acceptance
 
+- [ ] The automated E2E gate uses `ENVIRONMENT=test` and a database name ending in `_e2e`; its guarded reset, zero-row precondition, duplicate delivery, lowercase `кофе` row, and reused-link assertions pass.
 - [ ] HTTPS certificate is valid.
 - [ ] /health returns status ok.
 - [ ] A foreign Telegram user creates no transaction.

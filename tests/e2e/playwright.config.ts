@@ -7,10 +7,11 @@ const apiDirectory = path.resolve(e2eDirectory, "../../apps/api");
 const webDirectory = path.resolve(e2eDirectory, "../../apps/web");
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
-  "postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow";
+  "postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_e2e";
 const serverEnvironment = {
   AUTHORIZED_TELEGRAM_USER_ID: "1",
   DATABASE_URL: databaseUrl,
+  ENVIRONMENT: "test",
   PUBLIC_WEB_URL: "http://127.0.0.1:5173",
   SESSION_COOKIE_SECURE: "false",
   TELEGRAM_BOT_TOKEN: "e2e-bot-token",
