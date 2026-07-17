@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from moneyflow.auth.routes import get_current_user_id
 from moneyflow.db import get_session
 from moneyflow.main import create_app
 from moneyflow.models import Transaction, TransactionDirection, TransactionType, UserSettings
@@ -127,6 +128,7 @@ async def test_create_returns_201(
             yield route_session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user_id] = lambda: 1
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -159,6 +161,7 @@ async def test_list_returns_an_array(
             yield route_session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user_id] = lambda: 1
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:

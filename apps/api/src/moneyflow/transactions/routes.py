@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from moneyflow.auth.routes import get_current_user_id
 from moneyflow.db import get_session
 from moneyflow.transactions.schemas import (
     CreateTransactionCommand,
@@ -13,11 +14,6 @@ from moneyflow.transactions.service import TransactionService
 
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
-
-
-async def get_current_user_id() -> int:
-    """Temporary single-owner dependency; Task 4 replaces this with authentication."""
-    return 1
 
 
 async def get_transaction_service(
