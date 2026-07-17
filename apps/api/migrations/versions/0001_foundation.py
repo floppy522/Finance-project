@@ -24,9 +24,12 @@ def upgrade() -> None:
     op.create_table(
         "user_settings",
         sa.Column("telegram_user_id", sa.BigInteger(), autoincrement=False, nullable=False),
+        sa.Column("singleton_slot", sa.SmallInteger(), server_default="1", nullable=False),
         sa.Column("timezone", sa.String(length=64), server_default="Europe/Moscow", nullable=False),
         sa.Column("base_currency", sa.String(length=3), server_default="RUB", nullable=False),
+        sa.CheckConstraint("singleton_slot = 1", name="ck_user_settings_singleton_slot"),
         sa.PrimaryKeyConstraint("telegram_user_id"),
+        sa.UniqueConstraint("singleton_slot", name="uq_user_settings_singleton_slot"),
     )
     op.create_table(
         "login_tokens",

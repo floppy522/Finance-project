@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -34,8 +35,15 @@ class TransactionDirection(enum.StrEnum):
 
 class UserSettings(Base):
     __tablename__ = "user_settings"
+    __table_args__ = (
+        CheckConstraint("singleton_slot = 1", name="ck_user_settings_singleton_slot"),
+        UniqueConstraint("singleton_slot", name="uq_user_settings_singleton_slot"),
+    )
 
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    singleton_slot: Mapped[int] = mapped_column(
+        SmallInteger, default=1, server_default="1", nullable=False
+    )
     timezone: Mapped[str] = mapped_column(
         String(64), default="Europe/Moscow", server_default="Europe/Moscow"
     )
