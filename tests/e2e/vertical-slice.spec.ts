@@ -6,14 +6,16 @@ import { expect, test } from "@playwright/test";
 
 const e2eDirectory = fileURLToPath(new URL(".", import.meta.url));
 const apiDirectory = path.resolve(e2eDirectory, "../../apps/api");
-const databaseUrl =
-  process.env.TEST_DATABASE_URL ??
-  "postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_e2e";
+const databaseUrl = process.env.TEST_DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("E2E requires an explicit TEST_DATABASE_URL ending in _e2e");
+}
 const pythonEnvironment = {
   ...process.env,
   AUTHORIZED_TELEGRAM_USER_ID: "1",
   DATABASE_URL: databaseUrl,
   ENVIRONMENT: "test",
+  TEST_DATABASE_URL: databaseUrl,
 };
 
 function runApi(command: string, arguments_: string[], cwd = e2eDirectory): string {
@@ -53,7 +55,12 @@ function telegramUpdate(updateId: number, text: string) {
   };
 }
 
-test.beforeAll(() => {
+test.beforeAll(async ({ request }) => {
+  const identityResponse = await request.get("http://127.0.0.1:8000/health");
+  expect(identityResponse.status()).toBe(200);
+  expect(identityResponse.headers()["x-moneyflow-e2e-server"]).toBe(
+    process.env.MONEYFLOW_E2E_SERVER_IDENTITY,
+  );
   runPython(["support/prepare_database.py"]);
   runApi("alembic", ["upgrade", "head"], apiDirectory);
   runPython(["-m", "moneyflow.bootstrap"]);

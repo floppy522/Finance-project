@@ -1,15 +1,19 @@
 import json
 import logging
+from io import StringIO
 from types import SimpleNamespace
 
 import pytest
 from aiogram.types import Update
 from fastapi import HTTPException
+from httpx import ASGITransport, AsyncClient
 
-from moneyflow.config import Settings
+from moneyflow.config import Settings, get_settings
+from moneyflow.db import engine
 from moneyflow.logging import JsonFormatter, configure_logging
+from moneyflow.main import create_app
 from moneyflow.telegram.router import handle_text_update
-from moneyflow.telegram.webhook import receive_webhook
+from moneyflow.telegram.webhook import get_bot, receive_webhook
 
 
 class CapturingHandler(logging.Handler):
@@ -138,6 +142,115 @@ def test_configure_logging_installs_one_json_handler(
     assert len(installed_handlers) == 1
     assert isinstance(installed_handlers[0].formatter, JsonFormatter)
     assert moneyflow_logger.propagate is False
+
+
+def test_database_engine_hides_statement_parameters() -> None:
+    assert engine.sync_engine.hide_parameters is True
+
+
+def test_configure_logging_sanitizes_root_and_uvicorn_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (None, "uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        monkeypatch.setattr(logger, "handlers", [logging.StreamHandler()])
+        if name is not None:
+            monkeypatch.setattr(logger, "propagate", True)
+
+    configure_logging()
+
+    for name in (None, "uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0].formatter, JsonFormatter)
+        if name is not None:
+            assert logger.propagate is False
+    assert logging.getLogger("uvicorn.access").disabled is True
+
+
+async def test_unhandled_exception_is_generic_and_logs_no_private_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app()
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(JsonFormatter())
+    moneyflow_logger = logging.getLogger("moneyflow")
+    monkeypatch.setattr(moneyflow_logger, "handlers", [handler])
+    monkeypatch.setattr(moneyflow_logger, "propagate", False)
+
+    @app.get("/fault")
+    async def fault() -> None:
+        raise RuntimeError(
+            "amount=98765 description=Секрет message=Скрытая-покупка token=login-secret"
+        )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/fault")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal server error"}
+    rendered = output.getvalue()
+    assert "internal_error" in rendered
+    assert "RuntimeError" in rendered
+    for private_field in ("amount", "description", "message", "token"):
+        assert private_field not in rendered
+    for private_value in ("98765", "Секрет", "Скрытая-покупка", "login-secret"):
+        assert private_value not in rendered
+
+
+async def test_malformed_telegram_update_is_sanitized_in_response_and_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        telegram_webhook_secret="expected"
+    )
+    app.dependency_overrides[get_bot] = lambda: FakeBot()
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(JsonFormatter())
+    moneyflow_logger = logging.getLogger("moneyflow")
+    monkeypatch.setattr(moneyflow_logger, "handlers", [handler])
+    monkeypatch.setattr(moneyflow_logger, "propagate", False)
+    private_values = ("98765", "Секрет", "Скрытая-покупка", "login-secret")
+    payload = {
+        "update_id": 44,
+        "message": {
+            "message_id": 44,
+            "date": 1_768_651_200,
+            "chat": {"id": 1, "type": "private"},
+            "from": {"id": 1, "is_bot": False, "first_name": "Owner"},
+            "text": {
+                "amount": private_values[0],
+                "description": private_values[1],
+                "message": private_values[2],
+                "token": private_values[3],
+            },
+        },
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "expected"},
+            json=payload,
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid request"}
+    rendered = output.getvalue()
+    assert "request_rejected" in rendered
+    for private_field in ("amount", "description", "message", "token"):
+        assert private_field not in rendered
+    for private_value in private_values:
+        assert private_value not in rendered
 
 
 async def test_wrong_webhook_secret_logs_only_rejection_event(

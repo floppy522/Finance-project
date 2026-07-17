@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchTransactions, UNAUTHORIZED } from "../api/client";
+import { fetchCurrentUser, fetchTransactions, UNAUTHORIZED } from "../api/client";
 
 const rubles = new Intl.NumberFormat("ru-RU", {
   style: "currency",
@@ -9,27 +9,31 @@ const rubles = new Intl.NumberFormat("ru-RU", {
   maximumFractionDigits: 2,
 });
 
-const date = new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium" });
-
 export function TransactionList() {
-  const transactions = useQuery({
-    queryKey: ["transactions"],
-    queryFn: fetchTransactions,
+  const dashboard = useQuery({
+    queryKey: ["transactions", "owner-settings"],
+    queryFn: async () => {
+      const [transactions, owner] = await Promise.all([
+        fetchTransactions(),
+        fetchCurrentUser(),
+      ]);
+      return { transactions, owner };
+    },
     retry: (failureCount, error) => error.message !== UNAUTHORIZED && failureCount < 3,
   });
 
-  if (transactions.isPending) {
+  if (dashboard.isPending) {
     return <p role="status">Загрузка операций…</p>;
   }
 
-  if (transactions.isError) {
-    if (transactions.error.message === UNAUTHORIZED) {
+  if (dashboard.isError) {
+    if (dashboard.error.message === UNAUTHORIZED) {
       return <p role="alert">Запросите новую ссылку командой /login</p>;
     }
     return <p role="alert">Не удалось загрузить операции. Попробуйте ещё раз.</p>;
   }
 
-  if (transactions.data.length === 0) {
+  if (dashboard.data.transactions.length === 0) {
     return <p>Операций пока нет.</p>;
   }
 
@@ -45,9 +49,14 @@ export function TransactionList() {
           </tr>
         </thead>
         <tbody>
-          {transactions.data.map((transaction) => (
+          {dashboard.data.transactions.map((transaction) => (
             <tr key={transaction.id}>
-              <td>{date.format(new Date(transaction.occurred_at))}</td>
+              <td>
+                {new Intl.DateTimeFormat("ru-RU", {
+                  dateStyle: "medium",
+                  timeZone: dashboard.data.owner.timezone,
+                }).format(new Date(transaction.occurred_at))}
+              </td>
               <td>{transaction.description}</td>
               <td>{rubles.format(transaction.amount_kopecks / 100)}</td>
             </tr>

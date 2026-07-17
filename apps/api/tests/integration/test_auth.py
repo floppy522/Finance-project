@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -5,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from moneyflow.auth.service import LoginService
@@ -55,6 +56,29 @@ async def test_login_token_is_single_use(session: AsyncSession) -> None:
     assert await service(session, minute=1).authenticate_session(web_session) == 1
     with pytest.raises(PermissionError, match="invalid credentials"):
         await service(session, minute=1).exchange_login_token(login)
+
+
+async def test_concurrent_dual_exchange_creates_exactly_one_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as issuing_session:
+        login = await service(issuing_session).issue_login_token(1)
+
+    async def exchange() -> str | BaseException:
+        async with session_factory() as exchange_session:
+            try:
+                return await service(exchange_session, minute=1).exchange_login_token(login)
+            except BaseException as error:
+                return error
+
+    outcomes = await asyncio.gather(exchange(), exchange())
+
+    assert sum(isinstance(outcome, str) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, PermissionError) for outcome in outcomes) == 1
+    async with session_factory() as assertion_session:
+        assert await assertion_session.scalar(
+            select(func.count()).select_from(WebSession)
+        ) == 1
 
 
 async def test_login_token_expires_at_exactly_ten_minutes(session: AsyncSession) -> None:
@@ -119,7 +143,10 @@ async def test_exchange_sets_constrained_http_only_cookie(
 async def test_me_and_revoke_session(client: AsyncClient, session: AsyncSession) -> None:
     login_token = await service(session).issue_login_token(1)
     assert (await client.post("/api/auth/exchange", json={"token": login_token})).status_code == 204
-    assert (await client.get("/api/auth/me")).json() == {"telegram_user_id": 1}
+    assert (await client.get("/api/auth/me")).json() == {
+        "telegram_user_id": 1,
+        "timezone": "Europe/Moscow",
+    }
 
     response = await client.delete("/api/auth/sessions")
 

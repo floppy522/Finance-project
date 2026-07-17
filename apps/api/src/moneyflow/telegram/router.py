@@ -47,6 +47,9 @@ async def handle_text_update(
         )
         return
 
+    if message.chat.type != "private" or message.chat.id != from_user.id:
+        return
+
     text = message.text
     if text is None:
         return
@@ -55,6 +58,14 @@ async def handle_text_update(
         token = await login_service.issue_login_token(from_user.id)
         login_url = f"{settings.public_web_url.rstrip('/')}/login?token={token}"
         await bot.send_message(chat_id=message.chat.id, text=login_url)
+        return
+
+    if text in {"/logout", "/revoke_sessions"}:
+        await login_service.revoke_all_sessions(from_user.id)
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text="Все веб-сессии завершены.",
+        )
         return
 
     try:

@@ -74,6 +74,31 @@ def test_production_compose_keeps_data_internal_and_gives_api_egress() -> None:
         assert "ports" not in services[name]
 
 
+def test_production_compose_minimizes_service_secrets_and_fails_closed() -> None:
+    services = load_production_compose()["services"]
+
+    assert "env_file" not in services["db"]
+    assert set(services["db"]["environment"]) == {
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    }
+    assert "env_file" not in services["api"]
+    assert set(services["api"]["environment"]) == {
+        "AUTHORIZED_TELEGRAM_USER_ID",
+        "DATABASE_URL",
+        "ENVIRONMENT",
+        "PUBLIC_WEB_URL",
+        "SESSION_COOKIE_SECURE",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_WEBHOOK_SECRET",
+    }
+    assert services["api"]["environment"]["ENVIRONMENT"] == "production"
+    assert services["api"]["environment"]["SESSION_COOKIE_SECURE"] == "true"
+    assert set(services["caddy"]["environment"]) == {"MONEYFLOW_DOMAIN"}
+    assert "environment" not in services["web"]
+
+
 def test_runbook_secret_setup_is_idempotent_and_validates_generated_values() -> None:
     runbook = read_repository_file("ops/deploy.md")
 
@@ -83,6 +108,26 @@ def test_runbook_secret_setup_is_idempotent_and_validates_generated_values() -> 
     assert '[[ "$POSTGRES_PASSWORD" =~ ^[[:xdigit:]]{64}$ ]]' in runbook
     assert '[[ "$TELEGRAM_WEBHOOK_SECRET" =~ ^[[:xdigit:]]{64}$ ]]' in runbook
     assert "chmod 0600 /opt/moneyflow/.env" in runbook
+    assert "printf 'ENVIRONMENT=production\\n'" in runbook
+    assert "printf 'SESSION_COOKIE_SECURE=true\\n'" in runbook
+    assert '[[ "$ENVIRONMENT" == "production" ]]' in runbook
+    assert '[[ "$SESSION_COOKIE_SECURE" == "true" ]]' in runbook
+
+
+def test_api_production_command_disables_uvicorn_access_log() -> None:
+    dockerfile = read_repository_file("apps/api/Dockerfile")
+
+    assert "--no-access-log" in dockerfile
+
+
+def test_playwright_never_reuses_api_and_checks_dedicated_server_identity() -> None:
+    config = read_repository_file("tests/e2e/playwright.config.ts")
+    spec = read_repository_file("tests/e2e/vertical-slice.spec.ts")
+
+    api_server = config.split("webServer:", maxsplit=1)[1].split("},", maxsplit=1)[0]
+    assert "reuseExistingServer: false" in api_server
+    assert "MONEYFLOW_E2E_SERVER_IDENTITY" in config
+    assert "x-moneyflow-e2e-server" in spec
 
 
 def test_webhook_registration_urlencodes_fields_without_secret_arguments() -> None:

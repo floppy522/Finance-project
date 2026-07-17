@@ -15,6 +15,11 @@ export interface TransactionResponse {
   source_event_id: string | null;
 }
 
+export interface CurrentUserResponse {
+  telegram_user_id: number;
+  timezone: string;
+}
+
 export const UNAUTHORIZED = "UNAUTHORIZED";
 export const REQUEST_FAILED = "REQUEST_FAILED";
 
@@ -42,4 +47,17 @@ export async function fetchTransactions(): Promise<TransactionResponse[]> {
   }
 
   return response.json() as Promise<TransactionResponse[]>;
+}
+
+export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
+  const response = await fetch("/api/auth/me", { credentials: "include" });
+
+  if (response.status === 401) {
+    throw new Error(UNAUTHORIZED);
+  }
+  if (!response.ok) {
+    throw new Error(REQUEST_FAILED);
+  }
+
+  return response.json() as Promise<CurrentUserResponse>;
 }

@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from moneyflow.auth.service import LoginService
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
 from moneyflow.main import create_app
@@ -27,13 +28,19 @@ class FakeBot:
 
 
 def _update_factory(user_id: int) -> Callable[..., dict[str, Any]]:
-    def make_update(*, update_id: int, text: str) -> dict[str, Any]:
+    def make_update(
+        *,
+        update_id: int,
+        text: str,
+        chat_id: int | None = None,
+        chat_type: str = "private",
+    ) -> dict[str, Any]:
         return {
             "update_id": update_id,
             "message": {
                 "message_id": update_id,
                 "date": 1_768_651_200,
-                "chat": {"id": user_id, "type": "private"},
+                "chat": {"id": chat_id if chat_id is not None else user_id, "type": chat_type},
                 "from": {
                     "id": user_id,
                     "is_bot": False,
@@ -165,6 +172,47 @@ async def test_foreign_user_creates_no_transaction(
     assert fake_bot.messages == []
 
 
+@pytest.mark.parametrize(
+    ("chat_id", "chat_type"),
+    [
+        (-100_123, "group"),
+        (-100_456, "supergroup"),
+        (-100_789, "channel"),
+        (999, "private"),
+    ],
+)
+async def test_authorized_user_outside_own_private_chat_is_silently_rejected_before_parsing(
+    client: AsyncClient,
+    authorized_update: Callable[..., dict[str, Any]],
+    transaction_count: Callable[[], Any],
+    fake_bot: FakeBot,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_id: int,
+    chat_type: str,
+) -> None:
+    def fail_if_parser_is_invoked(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        pytest.fail("non-private update reached the parser")
+
+    monkeypatch.setattr(
+        "moneyflow.telegram.router.parse_simple_expense", fail_if_parser_is_invoked
+    )
+
+    response = await post_valid_webhook(
+        client,
+        authorized_update(
+            update_id=20,
+            text="Секретная покупка 98765",
+            chat_id=chat_id,
+            chat_type=chat_type,
+        ),
+    )
+
+    assert response.status_code == 204
+    assert await transaction_count() == 0
+    assert fake_bot.messages == []
+
+
 async def test_repeated_update_creates_one_transaction(
     client: AsyncClient,
     authorized_update: Callable[..., dict[str, Any]],
@@ -189,3 +237,24 @@ async def test_login_command_returns_one_time_web_link(
 
     assert response.status_code == 204
     assert fake_bot.messages[0].startswith("http://localhost:5173/login?token=")
+
+
+async def test_logout_command_revokes_all_web_sessions(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    authorized_update: Callable[..., dict[str, Any]],
+    fake_bot: FakeBot,
+) -> None:
+    async with session_factory() as session:
+        login_token = await LoginService(session).issue_login_token(1)
+    assert (await client.post("/api/auth/exchange", json={"token": login_token})).status_code == 204
+    assert (await client.get("/api/auth/me")).status_code == 200
+
+    response = await post_valid_webhook(
+        client,
+        authorized_update(update_id=21, text="/logout"),
+    )
+
+    assert response.status_code == 204
+    assert fake_bot.messages == ["Все веб-сессии завершены."]
+    assert (await client.get("/api/auth/me")).status_code == 401

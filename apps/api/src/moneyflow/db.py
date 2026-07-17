@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import (
 from moneyflow.config import get_settings
 
 
-engine = create_async_engine(get_settings().database_url)
+engine = create_async_engine(get_settings().database_url, hide_parameters=True)
 session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 

@@ -2,11 +2,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from moneyflow.auth.service import INVALID_CREDENTIALS, LoginService
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
+from moneyflow.models import UserSettings
 
 
 SESSION_COOKIE = "moneyflow_session"
@@ -21,6 +23,7 @@ class ExchangeLoginTokenRequest(BaseModel):
 
 class CurrentUserResponse(BaseModel):
     telegram_user_id: int
+    timezone: str
 
 
 async def get_login_service(
@@ -70,8 +73,19 @@ async def exchange_login_token(
 @router.get("/me", response_model=CurrentUserResponse)
 async def get_current_user(
     telegram_user_id: Annotated[int, Depends(get_current_user_id)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> CurrentUserResponse:
-    return CurrentUserResponse(telegram_user_id=telegram_user_id)
+    timezone = await session.scalar(
+        select(UserSettings.timezone).where(
+            UserSettings.telegram_user_id == telegram_user_id
+        )
+    )
+    if timezone is None:
+        raise RuntimeError("authenticated owner settings are missing")
+    return CurrentUserResponse(
+        telegram_user_id=telegram_user_id,
+        timezone=timezone,
+    )
 
 
 @router.delete("/sessions", status_code=status.HTTP_204_NO_CONTENT)

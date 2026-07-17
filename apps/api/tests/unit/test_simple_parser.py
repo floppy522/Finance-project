@@ -21,6 +21,12 @@ def test_parses_description_and_rubles() -> None:
     assert result.source_event_id == "telegram:10"
 
 
+def test_preserves_mixed_case_description() -> None:
+    result = parse_simple_expense("Кофе 350", FIXED_NOW, "telegram:mixed-case")
+
+    assert result.description == "Кофе"
+
+
 def test_parses_fractional_rubles_with_decimal_arithmetic() -> None:
     result = parse_simple_expense("кофе 350,25", FIXED_NOW, "telegram:11")
 

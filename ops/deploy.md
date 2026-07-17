@@ -43,6 +43,7 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
     trap cleanup_env EXIT HUP INT TERM
 
     {
+        printf 'ENVIRONMENT=production\n'
         printf 'MONEYFLOW_DOMAIN=%s\n' "$MONEYFLOW_DOMAIN"
         printf 'POSTGRES_DB=moneyflow\n'
         printf 'POSTGRES_USER=moneyflow\n'
@@ -71,12 +72,16 @@ set -a
 . /opt/moneyflow/.env
 set +a
 : "${MONEYFLOW_DOMAIN:?missing MONEYFLOW_DOMAIN}"
+: "${ENVIRONMENT:?missing ENVIRONMENT}"
 : "${POSTGRES_PASSWORD:?missing POSTGRES_PASSWORD}"
 : "${DATABASE_URL:?missing DATABASE_URL}"
 : "${TELEGRAM_BOT_TOKEN:?missing TELEGRAM_BOT_TOKEN}"
 : "${TELEGRAM_WEBHOOK_SECRET:?missing TELEGRAM_WEBHOOK_SECRET}"
 : "${AUTHORIZED_TELEGRAM_USER_ID:?missing AUTHORIZED_TELEGRAM_USER_ID}"
 : "${AGE_RECIPIENT:?missing AGE_RECIPIENT}"
+: "${SESSION_COOKIE_SECURE:?missing SESSION_COOKIE_SECURE}"
+[[ "$ENVIRONMENT" == "production" ]]
+[[ "$SESSION_COOKIE_SECURE" == "true" ]]
 [[ "$MONEYFLOW_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]
 [[ "$AUTHORIZED_TELEGRAM_USER_ID" =~ ^[1-9][0-9]*$ ]]
 [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
