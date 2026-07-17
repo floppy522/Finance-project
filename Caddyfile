@@ -1,0 +1,25 @@
+{$MONEYFLOW_DOMAIN} {
+    @login path /login
+    log_skip @login
+
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    }
+
+    @api path /api/* /telegram/*
+    handle @api {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        reverse_proxy web:80
+    }
+}

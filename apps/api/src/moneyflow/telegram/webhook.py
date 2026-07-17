@@ -1,3 +1,4 @@
+import logging
 import secrets
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
@@ -15,6 +16,7 @@ from moneyflow.transactions.service import TransactionService
 
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
+logger = logging.getLogger(__name__)
 
 
 async def get_bot(
@@ -55,6 +57,10 @@ async def receive_webhook(
 ) -> None:
     expected_secret = settings.telegram_webhook_secret.get_secret_value()
     if secret_token is None or not secrets.compare_digest(secret_token, expected_secret):
+        logger.warning(
+            "webhook_rejected",
+            extra={"event": "webhook_rejected", "source": "telegram", "outcome": "rejected"},
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     update = Update.model_validate(payload)

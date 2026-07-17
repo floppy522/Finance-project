@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -7,6 +8,9 @@ from moneyflow.auth.service import LoginService
 from moneyflow.config import Settings
 from moneyflow.telegram.parser import FORMAT_INSTRUCTION, parse_simple_expense
 from moneyflow.transactions.service import TransactionService
+
+
+logger = logging.getLogger(__name__)
 
 
 class BotClient(Protocol):
@@ -32,6 +36,15 @@ async def handle_text_update(
 
     from_user = message.from_user
     if from_user is None or from_user.id != settings.authorized_telegram_user_id:
+        logger.warning(
+            "foreign_user_rejected",
+            extra={
+                "event": "foreign_user_rejected",
+                "request_id": str(update.update_id),
+                "source": "telegram",
+                "outcome": "rejected",
+            },
+        )
         return
 
     text = message.text
@@ -51,10 +64,28 @@ async def handle_text_update(
             f"telegram:{update.update_id}",
         )
     except ValueError:
+        logger.info(
+            "parser_rejected",
+            extra={
+                "event": "parser_rejected",
+                "request_id": str(update.update_id),
+                "source": "telegram",
+                "outcome": "rejected",
+            },
+        )
         await bot.send_message(chat_id=message.chat.id, text=FORMAT_INSTRUCTION)
         return
 
     transaction = await transaction_service.create(command)
+    logger.info(
+        "transaction_created",
+        extra={
+            "event": "transaction_created",
+            "request_id": str(update.update_id),
+            "source": "telegram",
+            "outcome": "created",
+        },
+    )
     await bot.send_message(
         chat_id=message.chat.id,
         text=(
