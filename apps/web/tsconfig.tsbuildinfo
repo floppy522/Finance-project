@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/api/client.ts","./src/auth/LoginCallback.tsx","./src/test/setup.ts","./src/transactions/TransactionList.test.tsx","./src/transactions/TransactionList.tsx","./vite.config.ts"],"version":"5.9.3"}

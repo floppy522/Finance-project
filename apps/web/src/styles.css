@@ -1,0 +1,34 @@
+:root {
+  color: #1d2433;
+  background: #f6f7fb;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+.app-shell {
+  width: min(100% - 2rem, 56rem);
+  margin: 0 auto;
+  padding: 1.5rem 0;
+}
+
+h1 { margin: 0 0 1.5rem; }
+
+.table-scroll { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; min-width: 26rem; background: #fff; }
+
+caption { padding: .75rem; text-align: left; font-weight: 700; }
+
+th, td { border-bottom: 1px solid #d9deea; padding: .75rem; text-align: left; }
+
+th:last-child, td:last-child { text-align: right; white-space: nowrap; }
+
+:focus-visible { outline: 3px solid #1468d4; outline-offset: 3px; }
+
+@media (max-width: 360px) {
+  .app-shell { width: min(100% - 1rem, 56rem); padding-top: 1rem; }
+  th, td { padding: .625rem; }
+}
