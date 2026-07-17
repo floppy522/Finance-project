@@ -1,5 +1,5 @@
-from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
+from collections.abc import Coroutine
+from datetime import UTC
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -20,10 +20,6 @@ class Session(Protocol):
     def commit(self) -> Coroutine[Any, Any, None]: ...
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
 class TransactionService:
     def __init__(
         self,
@@ -31,12 +27,10 @@ class TransactionService:
         telegram_user_id: int,
         *,
         repository: Repository | None = None,
-        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._session = session
         self._telegram_user_id = telegram_user_id
         self._repository = repository or TransactionRepository(session)  # type: ignore[arg-type]
-        self._clock = clock
 
     async def create(self, command: CreateTransactionCommand) -> Transaction:
         if command.amount_kopecks <= 0:
@@ -45,7 +39,7 @@ class TransactionService:
         if not description:
             raise ValueError("description must not be empty")
 
-        occurred_at = command.occurred_at or self._clock()
+        occurred_at = command.occurred_at
         if occurred_at.tzinfo is None:
             occurred_at = occurred_at.replace(tzinfo=UTC)
         else:

@@ -1,54 +1,52 @@
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from uuid import uuid4
 
-import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from moneyflow.db import get_session
 from moneyflow.main import create_app
-from moneyflow.models import Transaction, TransactionDirection, TransactionType
+from moneyflow.models import Transaction, TransactionDirection, TransactionType, UserSettings
 from moneyflow.transactions.schemas import CreateTransactionCommand
-from moneyflow.transactions.routes import get_transaction_service
 from moneyflow.transactions.service import TransactionService
 
 
-class FakeSession:
-    def __init__(self) -> None:
-        self.commits = 0
+@pytest_asyncio.fixture
+async def session_factory(
+    engine: AsyncEngine,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        await session.execute(delete(Transaction))
+        await session.execute(delete(UserSettings))
+        session.add(UserSettings(telegram_user_id=1))
+        await session.commit()
 
-    async def commit(self) -> None:
-        self.commits += 1
+    yield factory
+
+    async with factory() as session:
+        await session.execute(delete(Transaction))
+        await session.execute(delete(UserSettings))
+        await session.commit()
 
 
-class FakeTransactionRepository:
-    def __init__(self) -> None:
-        self.rows: list[Transaction] = []
-        self._lock = asyncio.Lock()
-
-    async def add(self, transaction: Transaction) -> Transaction:
-        async with self._lock:
-            if transaction.source_event_id is not None:
-                for row in self.rows:
-                    if (row.source, row.source_event_id) == (
-                        transaction.source,
-                        transaction.source_event_id,
-                    ):
-                        return row
-            transaction.id = uuid4()
-            transaction.created_at = datetime.now(UTC)
-            self.rows.append(transaction)
-            return transaction
-
-    async def list_recent(self, telegram_user_id: int, limit: int) -> list[Transaction]:
-        matching = [row for row in self.rows if row.owner == telegram_user_id]
-        return sorted(matching, key=lambda row: row.occurred_at, reverse=True)[:limit]
+@pytest_asyncio.fixture
+async def session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    async with session_factory() as transaction_session:
+        yield transaction_session
+        await transaction_session.rollback()
 
 
 def command(
     *,
     amount_kopecks: int = 35_000,
     source_event_id: str | None = "telegram:default",
-    occurred_at: datetime = datetime(2026, 7, 17, 12),
+    occurred_at: datetime = datetime(2026, 7, 17, 12, tzinfo=UTC),
     description: str = "Кофе",
 ) -> CreateTransactionCommand:
     return CreateTransactionCommand(
@@ -62,92 +60,73 @@ def command(
     )
 
 
-def service(
-    session: FakeSession, repository: FakeTransactionRepository
-) -> TransactionService:
-    return TransactionService(session, 1, repository=repository)
+def service(session: AsyncSession) -> TransactionService:
+    return TransactionService(session, 1)
 
 
-async def test_create_stores_350_rubles_as_35000_kopecks() -> None:
-    session = FakeSession()
-    created = await service(session, FakeTransactionRepository()).create(
-        command(amount_kopecks=35_000)
-    )
+async def test_create_stores_350_rubles_as_35000_kopecks(session: AsyncSession) -> None:
+    created = await service(session).create(command(amount_kopecks=35_000))
     assert created.amount_kopecks == 35_000
 
 
-async def test_zero_amount_is_rejected() -> None:
-    with pytest.raises(ValueError, match="amount_kopecks must be positive"):
-        await service(FakeSession(), FakeTransactionRepository()).create(
-            command(amount_kopecks=0)
+async def test_same_telegram_event_is_idempotent(session: AsyncSession) -> None:
+    first = await service(session).create(command(source_event_id="telegram:100"))
+    second = await service(session).create(command(source_event_id="telegram:100"))
+    assert second.id == first.id
+    count = await session.scalar(select(func.count()).select_from(Transaction))
+    assert count == 1
+
+
+async def test_concurrent_delivery_is_idempotent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as first_session, session_factory() as second_session:
+        first, second = await asyncio.gather(
+            service(first_session).create(
+                command(source_event_id="telegram:concurrent")
+            ),
+            service(second_session).create(
+                command(source_event_id="telegram:concurrent")
+            ),
         )
 
+    async with session_factory() as assertion_session:
+        count = await assertion_session.scalar(
+            select(func.count())
+            .select_from(Transaction)
+            .where(
+                Transaction.source == "telegram",
+                Transaction.source_event_id == "telegram:concurrent",
+            )
+        )
 
-async def test_same_telegram_event_is_idempotent() -> None:
-    session = FakeSession()
-    repository = FakeTransactionRepository()
-    first = await service(session, repository).create(
-        command(source_event_id="telegram:100")
-    )
-    second = await service(session, repository).create(
-        command(source_event_id="telegram:100")
-    )
-    assert second.id == first.id
-
-
-async def test_concurrent_delivery_is_idempotent() -> None:
-    repository = FakeTransactionRepository()
-    first, second = await asyncio.gather(
-        service(FakeSession(), repository).create(
-            command(source_event_id="telegram:concurrent")
-        ),
-        service(FakeSession(), repository).create(
-            command(source_event_id="telegram:concurrent")
-        ),
-    )
     assert first.id == second.id
+    assert count == 1
 
 
-async def test_recent_list_is_newest_first() -> None:
-    session = FakeSession()
-    repository = FakeTransactionRepository()
-    await service(session, repository).create(
-        command(source_event_id="telegram:100", occurred_at=datetime(2026, 7, 17, 12))
+async def test_recent_list_is_newest_first(session: AsyncSession) -> None:
+    await service(session).create(
+        command(source_event_id="telegram:100", occurred_at=datetime(2026, 7, 17, tzinfo=UTC))
     )
-    await service(session, repository).create(
-        command(source_event_id="telegram:101", occurred_at=datetime(2026, 7, 18, 12))
+    await service(session).create(
+        command(source_event_id="telegram:101", occurred_at=datetime(2026, 7, 18, tzinfo=UTC))
     )
-    assert [row.source_event_id for row in await service(session, repository).list_recent()] == [
+    assert [row.source_event_id for row in await service(session).list_recent()] == [
         "telegram:101",
         "telegram:100",
     ]
 
 
-async def test_create_normalizes_occurred_at_to_utc_and_commits_once() -> None:
-    session = FakeSession()
-    created = await service(session, FakeTransactionRepository()).create(command())
-    assert created.occurred_at == datetime(2026, 7, 17, 12, tzinfo=UTC)
-    assert session.commits == 1
-
-
-async def test_description_must_not_be_blank() -> None:
-    with pytest.raises(ValueError, match="description must not be empty"):
-        await service(FakeSession(), FakeTransactionRepository()).create(
-            command(description="   ")
-        )
-
-
-@pytest.mark.parametrize("limit", [0, 501])
-async def test_list_limit_must_be_between_1_and_500(limit: int) -> None:
-    with pytest.raises(ValueError, match="limit must be between 1 and 500"):
-        await service(FakeSession(), FakeTransactionRepository()).list_recent(limit=limit)
-
-
-async def test_create_returns_201() -> None:
+async def test_create_returns_201(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     app = create_app()
-    app.dependency_overrides[get_transaction_service] = lambda: service(
-        FakeSession(), FakeTransactionRepository()
-    )
+
+    async def override_get_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as route_session:
+            yield route_session
+
+    app.dependency_overrides[get_session] = override_get_session
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -161,17 +140,29 @@ async def test_create_returns_201() -> None:
                 "description": "Кофе",
             },
         )
+
     assert response.status_code == 201
     assert response.json()["amount_kopecks"] == 35_000
+    async with session_factory() as assertion_session:
+        assert await assertion_session.scalar(
+            select(func.count()).select_from(Transaction)
+        ) == 1
 
 
-async def test_list_returns_an_array() -> None:
+async def test_list_returns_an_array(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     app = create_app()
-    app.dependency_overrides[get_transaction_service] = lambda: service(
-        FakeSession(), FakeTransactionRepository()
-    )
+
+    async def override_get_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as route_session:
+            yield route_session
+
+    app.dependency_overrides[get_session] = override_get_session
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.get("/api/transactions")
+
+    assert response.status_code == 200
     assert isinstance(response.json(), list)

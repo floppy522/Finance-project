@@ -12,17 +12,17 @@ class CreateTransactionCommand:
     transaction_type: TransactionType
     direction: TransactionDirection
     amount_kopecks: int
-    occurred_at: datetime | None
+    occurred_at: datetime
     description: str
     source: str
-    source_event_id: str | None = None
+    source_event_id: str | None
 
 
 class CreateTransactionRequest(BaseModel):
     transaction_type: TransactionType
     direction: TransactionDirection = TransactionDirection.NORMAL
     amount_kopecks: int = Field(gt=0)
-    occurred_at: datetime | None = None
+    occurred_at: datetime
     description: str
 
     @field_validator("description")
