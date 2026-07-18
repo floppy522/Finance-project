@@ -116,7 +116,8 @@ class Transaction(Base):
             "(type = 'saving' AND category_code IS NULL AND category_source IS NULL "
             "AND category_confidence IS NULL AND needs_category_review IS NULL) OR "
             "(type IN ('expense', 'income') AND category_code IS NOT NULL "
-            "AND category_source IS NOT NULL AND category_confidence BETWEEN 0 AND 100 "
+            "AND category_source IS NOT NULL AND category_confidence IS NOT NULL "
+            "AND category_confidence BETWEEN 0 AND 100 "
             "AND needs_category_review IS NOT NULL)",
             name="ck_transactions_category_metadata_complete",
         ),
