@@ -99,6 +99,15 @@ def test_production_compose_minimizes_service_secrets_and_fails_closed() -> None
     assert "environment" not in services["web"]
 
 
+def test_postgres_18_mounts_version_aware_parent_directory() -> None:
+    for compose_path in ("compose.yaml", "compose.prod.yaml"):
+        compose = yaml.safe_load(read_repository_file(compose_path))
+        database = compose["services"]["db"]
+
+        assert database["image"].startswith("postgres:18")
+        assert database["volumes"] == ["postgres_data:/var/lib/postgresql"]
+
+
 def test_runbook_secret_setup_is_idempotent_and_validates_generated_values() -> None:
     runbook = read_repository_file("ops/deploy.md")
 
