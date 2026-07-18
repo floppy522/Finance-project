@@ -56,6 +56,10 @@ interface MockFetchOptions {
   patchStatus?: number;
   patchGate?: Promise<void>;
   errorRoute?: "categories" | "transactions" | "user";
+  errorStatus?: number;
+  pendingRoute?: "categories" | "transactions" | "user";
+  pendingGate?: Promise<void>;
+  filteredTransactionsGate?: Promise<void>;
 }
 
 function renderList() {
@@ -82,14 +86,22 @@ function mockDashboard(options: MockFetchOptions = {}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
 
+    if (
+      (options.pendingRoute === "user" && url.pathname === "/api/auth/me") ||
+      (options.pendingRoute === "categories" && url.pathname === "/api/categories") ||
+      (options.pendingRoute === "transactions" && url.pathname === "/api/transactions")
+    ) {
+      await options.pendingGate;
+    }
+
     if (options.errorRoute === "user" && url.pathname === "/api/auth/me") {
-      return new Response(null, { status: 500 });
+      return new Response(null, { status: options.errorStatus ?? 500 });
     }
     if (options.errorRoute === "categories" && url.pathname === "/api/categories") {
-      return new Response(null, { status: 500 });
+      return new Response(null, { status: options.errorStatus ?? 500 });
     }
     if (options.errorRoute === "transactions" && url.pathname === "/api/transactions") {
-      return new Response(null, { status: 500 });
+      return new Response(null, { status: options.errorStatus ?? 500 });
     }
 
     if (url.pathname === "/api/auth/me") {
@@ -105,6 +117,9 @@ function mockDashboard(options: MockFetchOptions = {}) {
     }
 
     if (url.pathname === "/api/transactions" && (init?.method ?? "GET") === "GET") {
+      if (url.search && options.filteredTransactionsGate) {
+        await options.filteredTransactionsGate;
+      }
       const categoryCode = url.searchParams.get("category_code");
       const review = url.searchParams.get("needs_category_review");
       const filtered = transactions.filter(
@@ -220,6 +235,29 @@ test("puts only the selected category and review filters in the transaction URL"
   );
 });
 
+test("hides stale editable rows while a new filtered result is pending", async () => {
+  let releaseFilteredTransactions!: () => void;
+  const filteredTransactionsGate = new Promise<void>((resolve) => {
+    releaseFilteredTransactions = resolve;
+  });
+  mockDashboard({ filteredTransactionsGate });
+  renderList();
+
+  expect(await screen.findByLabelText("Категория: Кофе")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Фильтр по категории"), {
+    target: { value: "expense.groceries" },
+  });
+
+  expect(await screen.findByRole("status")).toHaveTextContent("Загрузка операций");
+  expect(screen.getByLabelText("Фильтр по категории")).toHaveValue("expense.groceries");
+  expect(screen.getByLabelText("Фильтр проверки")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Категория: Кофе")).not.toBeInTheDocument();
+  expect(screen.queryByText("Кофе")).not.toBeInTheDocument();
+
+  releaseFilteredTransactions();
+  expect(await screen.findByText("По выбранным фильтрам операций нет.")).toBeInTheDocument();
+});
+
 test("serializes an explicitly false review filter without an empty query marker", async () => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
   vi.stubGlobal("fetch", fetchMock);
@@ -320,6 +358,61 @@ test("shows login instruction without retries when a dashboard request returns 4
     await screen.findByText("Запросите новую ссылку командой /login"),
   ).toBeInTheDocument();
   expect(fetch).toHaveBeenCalledTimes(4);
+});
+
+test.each([
+  {
+    status: 401,
+    message: "Запросите новую ссылку командой /login",
+  },
+  {
+    status: 500,
+    message: "Не удалось загрузить операции. Попробуйте ещё раз.",
+  },
+])("shows a $status transaction error while category catalogs are still pending", async ({
+  status,
+  message,
+}) => {
+  let releaseCategories!: () => void;
+  const pendingGate = new Promise<void>((resolve) => {
+    releaseCategories = resolve;
+  });
+  mockDashboard({
+    errorRoute: "transactions",
+    errorStatus: status,
+    pendingRoute: "categories",
+    pendingGate,
+  });
+  renderList();
+
+  try {
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  } finally {
+    releaseCategories();
+  }
+});
+
+test("gives duplicate descriptions deterministic unique category labels", async () => {
+  mockDashboard({
+    transactions: [
+      defaultTransactions[0],
+      {
+        ...defaultTransactions[0],
+        id: "00000000-0000-0000-0000-000000000003",
+        source_event_id: "telegram:duplicate",
+      },
+    ],
+  });
+  renderList();
+
+  expect(
+    await screen.findByLabelText("Категория: Кофе, операция 1 из 2"),
+  ).toHaveValue("expense.other");
+  expect(screen.getByLabelText("Категория: Кофе, операция 2 из 2")).toHaveValue(
+    "expense.other",
+  );
+  expect(screen.queryByLabelText("Категория: Кофе")).not.toBeInTheDocument();
 });
 
 test("shows a dashboard error when a category catalog cannot be loaded", async () => {

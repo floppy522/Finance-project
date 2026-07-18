@@ -39,7 +39,6 @@ export function TransactionList() {
       filters.needsCategoryReview ?? null,
     ],
     queryFn: () => fetchTransactions(filters),
-    placeholderData: (previousData) => previousData,
     retry: retryRequest,
   });
 
@@ -76,11 +75,6 @@ export function TransactionList() {
   });
 
   const queries = [transactions, owner, categories];
-
-  if (queries.some((query) => query.isPending)) {
-    return <p role="status">Загрузка операций…</p>;
-  }
-
   const queryError = queries.find((query) => query.isError)?.error;
   if (queryError) {
     if (queryError.message === UNAUTHORIZED) {
@@ -89,10 +83,36 @@ export function TransactionList() {
     return <p role="alert">Не удалось загрузить операции. Попробуйте ещё раз.</p>;
   }
 
+  if (owner.isPending || categories.isPending) {
+    return <p role="status">Загрузка операций…</p>;
+  }
+
   const transactionData = transactions.data ?? [];
   const ownerData = owner.data!;
   const categoryData = categories.data ?? [];
   const hasSelectedFilters = categoryCode !== "" || reviewFilter !== "";
+  const resultsPending = transactions.isPending || transactions.isPlaceholderData;
+  const descriptionCounts = new Map<string, number>();
+  const descriptionOrdinals = new Map<string, number>();
+  const categoryLabels = new Map<string, string>();
+
+  for (const transaction of transactionData) {
+    descriptionCounts.set(
+      transaction.description,
+      (descriptionCounts.get(transaction.description) ?? 0) + 1,
+    );
+  }
+  for (const transaction of transactionData) {
+    const total = descriptionCounts.get(transaction.description) ?? 1;
+    const ordinal = (descriptionOrdinals.get(transaction.description) ?? 0) + 1;
+    descriptionOrdinals.set(transaction.description, ordinal);
+    categoryLabels.set(
+      transaction.id,
+      total === 1
+        ? `Категория: ${transaction.description}`
+        : `Категория: ${transaction.description}, операция ${ordinal} из ${total}`,
+    );
+  }
 
   const updateCategory = (id: string, nextCategoryCode: string) => {
     if (editInFlight.current || categoryMutation.isPending) return;
@@ -159,7 +179,9 @@ export function TransactionList() {
         </p>
       )}
 
-      {transactionData.length === 0 ? (
+      {resultsPending ? (
+        <p role="status">Загрузка операций…</p>
+      ) : transactionData.length === 0 ? (
         <p>
           {hasSelectedFilters
             ? "По выбранным фильтрам операций нет."
@@ -198,7 +220,7 @@ export function TransactionList() {
                         <div className="category-cell">
                           <select
                             className="category-badge"
-                            aria-label={`Категория: ${transaction.description}`}
+                            aria-label={categoryLabels.get(transaction.id)}
                             value={transaction.category_code ?? ""}
                             disabled={categoryMutation.isPending}
                             onChange={(event) =>
