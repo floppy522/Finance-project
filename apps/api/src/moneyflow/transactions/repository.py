@@ -39,6 +39,10 @@ class TransactionRepository:
                 description=transaction.description,
                 source=transaction.source,
                 source_event_id=transaction.source_event_id,
+                category_code=transaction.category_code,
+                category_source=transaction.category_source,
+                category_confidence=transaction.category_confidence,
+                needs_category_review=transaction.needs_category_review,
             )
             .on_conflict_do_nothing(index_elements=["source", "source_event_id"])
             .returning(Transaction)

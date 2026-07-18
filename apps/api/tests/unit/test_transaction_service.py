@@ -4,7 +4,7 @@ from typing import Any, get_type_hints
 
 import pytest
 
-from moneyflow.models import Transaction, TransactionDirection, TransactionType
+from moneyflow.models import CategorySource, Transaction, TransactionDirection, TransactionType
 from moneyflow.transactions.schemas import CreateTransactionCommand
 from moneyflow.transactions.service import TransactionService
 
@@ -54,6 +54,13 @@ def test_create_transaction_command_matches_stable_contract() -> None:
     assert hints["source_event_id"] == str | None
     assert command_fields["occurred_at"].default is MISSING
     assert command_fields["source_event_id"].default is MISSING
+    for name in (
+        "category_code",
+        "category_source",
+        "category_confidence",
+        "needs_category_review",
+    ):
+        assert command_fields[name].default is None
     with pytest.raises(TypeError, match="source_event_id"):
         CreateTransactionCommand(
             transaction_type=TransactionType.EXPENSE,
@@ -67,6 +74,22 @@ def test_create_transaction_command_matches_stable_contract() -> None:
     instance = command()
     with pytest.raises(FrozenInstanceError):
         instance.amount_kopecks = 1
+
+
+async def test_create_without_category_uses_review_fallback() -> None:
+    created = await service().create(command())
+    assert created.category_code == "expense.other"
+    assert created.category_source is CategorySource.FALLBACK
+    assert created.category_confidence == 0
+    assert created.needs_category_review is True
+
+
+async def test_create_saving_without_category_keeps_metadata_empty() -> None:
+    created = await service().create(command(transaction_type=TransactionType.SAVING))
+    assert created.category_code is None
+    assert created.category_source is None
+    assert created.category_confidence is None
+    assert created.needs_category_review is None
 
 
 async def test_zero_amount_is_rejected() -> None:
