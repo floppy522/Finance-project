@@ -138,3 +138,85 @@ that reads cannot cross owner or transaction type.
 - Privacy: no logger is used and descriptions are not emitted.
 - Scope: the diff is limited to the six requested category modules, the two requested test
   modules, and this Task 3 report.
+
+## Review fixes — exact fuzzy lead and provider category type
+
+Two independent review regressions were implemented with separate RED/GREEN cycles.
+
+### Exact `0.05` fuzzy lead
+
+The public `CategoryResolver.resolve()` regression uses one description whose two
+`SequenceMatcher` scores are `0.95` and `0.90`. Before the production change:
+
+```text
+uv run pytest \
+  tests/unit/test_category_resolver.py::test_fuzzy_correction_accepts_exactly_five_point_lead \
+  -vv
+
+FAILED
+expected: CategoryDecision("expense.groceries", learned, 95, false)
+actual:   CategoryDecision("expense.other", fallback, 0, true)
+```
+
+Root cause: binary floating-point subtraction produces `0.04999999999999993`, which the direct
+`lead < 0.05` comparison rejected even though the source scores have the exact specified
+five-point lead. The comparison now uses an absolute tolerance equal only to the sum of one ULP
+for each score. This covers arithmetic representation error without materially lowering the
+`>= 0.05` threshold.
+
+Targeted GREEN, including the existing below-threshold guard:
+
+```text
+2 passed in 0.04s
+```
+
+### Non-string/nonhashable provider category
+
+The provider regression constructs `ProviderDecision(cast(str, []), 0.9)` and invokes the public
+resolver. Before the production change:
+
+```text
+uv run pytest \
+  tests/unit/test_category_resolver.py::test_non_string_nonhashable_provider_category_falls_back \
+  -vv
+
+FAILED
+TypeError: unhashable type: 'list'
+```
+
+Root cause: `category_matches_type()` performed a catalog mapping lookup before the provider
+category's runtime type was validated. `_provider_decision()` now explicitly requires `str`
+before lookup, so malformed provider values fail closed to the normal review fallback.
+
+Targeted GREEN, including all existing invalid-provider cases:
+
+```text
+9 passed in 0.05s
+```
+
+### Fresh final verification after formatting
+
+```text
+uv run pytest tests/unit/test_category_resolver.py -q
+36 passed in 0.09s
+
+uv run pytest tests/unit -q
+129 passed, 1 warning in 1.83s
+
+uv run ruff check src/moneyflow/categories \
+  tests/unit/test_category_resolver.py \
+  tests/integration/test_category_repository.py
+All checks passed!
+
+uv run ruff format --check src/moneyflow/categories \
+  tests/unit/test_category_resolver.py \
+  tests/integration/test_category_repository.py
+8 files already formatted
+
+uv run mypy
+Success: no issues found in 26 source files
+```
+
+The warning remains the pre-existing upstream Starlette test-client deprecation warning. The
+live PostgreSQL gate is unchanged and remains deferred; no database URL was inspected or used
+for these review fixes.

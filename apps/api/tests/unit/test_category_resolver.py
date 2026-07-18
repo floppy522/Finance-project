@@ -151,6 +151,19 @@ async def test_fuzzy_correction_requires_five_point_lead() -> None:
     assert result["1"] == CategoryDecision("expense.other", CategorySource.FALLBACK, 0, True)
 
 
+async def test_fuzzy_correction_accepts_exactly_five_point_lead() -> None:
+    resolver = resolver_with(
+        corrections=[
+            CorrectionExample("abcdefghijklmnopqrsx", "expense.groceries"),
+            CorrectionExample("abcdefghijklmnopqrxy", "expense.shopping"),
+        ]
+    )
+    result = await resolver.resolve(
+        [CategoryInput("1", "abcdefghijklmnopqrst", TransactionType.EXPENSE)]
+    )
+    assert result["1"] == CategoryDecision("expense.groceries", CategorySource.LEARNED, 95, False)
+
+
 @pytest.mark.parametrize(
     ("description", "transaction_type", "category_code"),
     [
@@ -239,6 +252,14 @@ async def test_provider_failure_falls_back_for_review() -> None:
 )
 async def test_invalid_provider_decision_falls_back(decision: ProviderDecision) -> None:
     provider = RecordingProvider({"1": decision})
+    result = await resolver_with(provider=provider).resolve(
+        [CategoryInput("1", "неизвестно", TransactionType.EXPENSE)]
+    )
+    assert result["1"] == CategoryDecision("expense.other", CategorySource.FALLBACK, 0, True)
+
+
+async def test_non_string_nonhashable_provider_category_falls_back() -> None:
+    provider = RecordingProvider({"1": ProviderDecision(cast(str, []), 0.9)})
     result = await resolver_with(provider=provider).resolve(
         [CategoryInput("1", "неизвестно", TransactionType.EXPENSE)]
     )

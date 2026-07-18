@@ -106,7 +106,11 @@ class CategoryResolver:
             return None
         best_score, best_example = ranked[0]
         second_score = ranked[1][0] if len(ranked) > 1 else 0.0
-        if best_score < 0.90 or best_score - second_score < 0.05:
+        lead = best_score - second_score
+        lead_tolerance = math.ulp(best_score) + math.ulp(second_score)
+        if best_score < 0.90 or (
+            lead < 0.05 and not math.isclose(lead, 0.05, rel_tol=0.0, abs_tol=lead_tolerance)
+        ):
             return None
         return CategoryDecision(
             best_example.category_code,
@@ -174,8 +178,10 @@ class CategoryResolver:
     def _provider_decision(
         item: CategoryInput, decision: ProviderDecision | None
     ) -> CategoryDecision | None:
-        if decision is None or not category_matches_type(
-            decision.category_code, item.transaction_type
+        if (
+            decision is None
+            or not isinstance(decision.category_code, str)
+            or not category_matches_type(decision.category_code, item.transaction_type)
         ):
             return None
         confidence = decision.confidence
