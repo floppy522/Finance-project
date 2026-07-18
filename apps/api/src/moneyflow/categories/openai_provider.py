@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -6,7 +7,6 @@ from typing import Protocol, cast
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from moneyflow.categories.catalog import CATEGORY_CATALOG, category_matches_type
 from moneyflow.categories.schemas import (
     CategoryInput,
     CorrectionExample,
@@ -52,33 +52,37 @@ class OpenAICategoryProvider:
         responses: _ResponsesAPI,
         model: str,
         client: AsyncOpenAI | None = None,
+        timeout_seconds: float = 5.0,
     ) -> None:
         self._responses = responses
         self._model = model
         self._client = client
+        self._timeout_seconds = timeout_seconds
         self._closed = False
 
     async def classify(
         self,
         items: Sequence[CategoryInput],
         examples: Mapping[str, Sequence[CorrectionExample]],
+        allowed_category_codes: Mapping[TransactionType, Sequence[str]],
     ) -> Mapping[str, ProviderDecision]:
         try:
             if not items or not _valid_input_items(items):
                 return {}
-            payload = _request_payload(items, examples)
-            response = await self._responses.parse(
-                model=self._model,
-                input=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, ensure_ascii=False),
-                    },
-                ],
-                text_format=AIBatch,
-            )
-            return _validated_decisions(response, items)
+            payload = _request_payload(items, examples, allowed_category_codes)
+            async with asyncio.timeout(self._timeout_seconds):
+                response = await self._responses.parse(
+                    model=self._model,
+                    input=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": json.dumps(payload, ensure_ascii=False),
+                        },
+                    ],
+                    text_format=AIBatch,
+                )
+            return _validated_decisions(response, items, allowed_category_codes)
         except Exception:
             return {}
 
@@ -120,22 +124,17 @@ def _valid_input_items(items: Sequence[CategoryInput]) -> bool:
 def _request_payload(
     items: Sequence[CategoryInput],
     examples: Mapping[str, Sequence[CorrectionExample]],
+    allowed_category_codes: Mapping[TransactionType, Sequence[str]],
 ) -> dict[str, object]:
-    allowed_codes = {
-        transaction_type: [
-            category.code
-            for category in CATEGORY_CATALOG
-            if category.transaction_type is transaction_type
-        ]
-        for transaction_type in (TransactionType.EXPENSE, TransactionType.INCOME)
-    }
     return {
         "items": [
             {
                 "item_id": item.item_id,
                 "description": item.description,
                 "transaction_type": item.transaction_type.value,
-                "allowed_category_codes": allowed_codes[item.transaction_type],
+                "allowed_category_codes": list(
+                    allowed_category_codes.get(item.transaction_type, ())
+                ),
                 "examples": [
                     {
                         "description": example.normalized_description,
@@ -143,7 +142,8 @@ def _request_payload(
                     }
                     for example in examples.get(item.item_id, ())[:5]
                     if isinstance(example, CorrectionExample)
-                    and category_matches_type(example.category_code, item.transaction_type)
+                    and example.category_code
+                    in allowed_category_codes.get(item.transaction_type, ())
                 ],
             }
             for item in items
@@ -152,7 +152,9 @@ def _request_payload(
 
 
 def _validated_decisions(
-    response: object, items: Sequence[CategoryInput]
+    response: object,
+    items: Sequence[CategoryInput],
+    allowed_category_codes: Mapping[TransactionType, Sequence[str]],
 ) -> dict[str, ProviderDecision]:
     if getattr(response, "status", None) != "completed":
         return {}
@@ -177,7 +179,8 @@ def _validated_decisions(
         confidence = item.confidence
         if (
             not isinstance(item.category_code, str)
-            or not category_matches_type(item.category_code, requested.transaction_type)
+            or item.category_code
+            not in allowed_category_codes.get(requested.transaction_type, ())
             or isinstance(confidence, bool)
             or not isinstance(confidence, (int, float))
             or not math.isfinite(confidence)

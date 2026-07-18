@@ -39,6 +39,7 @@ class CategoryProvider(Protocol):
         self,
         items: Sequence[CategoryInput],
         examples: Mapping[str, Sequence[CorrectionExample]],
+        allowed_category_codes: Mapping[TransactionType, Sequence[str]],
     ) -> Mapping[str, ProviderDecision]: ...
 
 

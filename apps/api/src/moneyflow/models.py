@@ -15,8 +15,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    select,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, column_property, mapped_column
 
 
 class Base(DeclarativeBase):
@@ -168,6 +169,9 @@ class Transaction(Base):
     )
     category_confidence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     needs_category_review: Mapped[bool | None] = mapped_column(nullable=True)
+    category_name_ru: Mapped[str | None] = column_property(
+        select(Category.name_ru).where(Category.code == category_code).scalar_subquery()
+    )
 
 
 class LoginToken(Base):

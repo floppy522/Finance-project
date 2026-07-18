@@ -205,6 +205,9 @@ export function TransactionList() {
                   (category): category is CategoryResponse =>
                     category.transaction_type === transaction.transaction_type,
                 );
+                const hasActiveCurrentCategory = compatibleCategories.some(
+                  (category) => category.code === transaction.category_code,
+                );
 
                 return (
                   <tr key={transaction.id}>
@@ -232,6 +235,12 @@ export function TransactionList() {
                                 Без категории
                               </option>
                             )}
+                            {transaction.category_code !== null &&
+                              !hasActiveCurrentCategory && (
+                                <option value={transaction.category_code} disabled>
+                                  {transaction.category_name_ru ?? transaction.category_code}
+                                </option>
+                              )}
                             {compatibleCategories.map((category) => (
                               <option key={category.code} value={category.code}>
                                 {category.name_ru}

@@ -170,6 +170,41 @@ def test_restore_check_preserves_isolation_and_validates_release_one_schema() ->
     assert "trap cleanup EXIT HUP INT TERM" in restore_check
 
 
+def test_restore_check_has_validated_legacy_and_release_one_schema_modes() -> None:
+    restore_check = read_repository_file("ops/restore-check.sh")
+
+    assert 'schema_mode="${1:-release1}"' in restore_check
+    assert "legacy)" in restore_check
+    assert "release1)" in restore_check
+    assert '*) exit 2' in restore_check
+    assert "c56238feadc4" in restore_check
+    assert "a841bc64e210" in restore_check
+    assert "to_regclass('public.categories') IS NULL" in restore_check
+    assert "to_regclass('public.category_corrections') IS NULL" in restore_check
+
+
+def test_release_one_runbook_verifies_both_sides_of_migration_before_start() -> None:
+    runbook = read_repository_file("ops/deploy.md")
+    checklist = read_repository_file("ops/release-1-checklist.md")
+
+    legacy_backup = runbook.index("ops/backup.sh")
+    legacy_check = runbook.index("ops/restore-check.sh legacy")
+    automatic_migration = runbook.index("alembic upgrade head")
+    release_one_backup = runbook.index("ops/restore-check.sh release1")
+    first_up = runbook.index("docker compose -f compose.prod.yaml --env-file .env up")
+    assert legacy_backup < legacy_check < automatic_migration < release_one_backup < first_up
+
+    rollback = runbook.split("## Rollback", maxsplit=1)[1]
+    assert "must not check out or start the previous code" in rollback
+    assert "loss of all writes after that backup" in rollback
+    assert "health response alone does not validate" in rollback
+    assert "curl " not in rollback
+
+    assert "legacy" in checklist
+    assert "release1" in checklist
+    assert "loss of all writes after" in checklist
+
+
 def test_postgres_18_mounts_version_aware_parent_directory() -> None:
     for compose_path in ("compose.yaml", "compose.prod.yaml"):
         compose = yaml.safe_load(read_repository_file(compose_path))
@@ -219,8 +254,9 @@ def test_webhook_registration_urlencodes_fields_without_secret_arguments() -> No
     assert 'url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"' not in runbook
 
 
-def test_rollback_health_probe_requires_api_json_response() -> None:
+def test_rollback_does_not_present_health_as_schema_validation() -> None:
     runbook = read_repository_file("ops/deploy.md")
+    rollback = runbook.split("## Rollback", maxsplit=1)[1]
 
-    assert "https://money.example.com/health" in runbook
-    assert "grep -Fxq '{\"status\":\"ok\"}'" in runbook
+    assert "health response alone does not validate" in rollback
+    assert "curl " not in rollback

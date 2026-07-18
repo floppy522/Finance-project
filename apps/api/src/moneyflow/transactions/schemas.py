@@ -52,6 +52,7 @@ class TransactionResponse(BaseModel):
     source: str
     source_event_id: str | None
     category_code: str | None
+    category_name_ru: str | None
     category_source: CategorySource | None
     category_confidence: int | None
     needs_category_review: bool | None

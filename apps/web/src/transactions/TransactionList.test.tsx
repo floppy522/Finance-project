@@ -28,6 +28,7 @@ const defaultTransactions = [
     source: "telegram",
     source_event_id: null,
     category_code: "expense.other",
+    category_name_ru: "Прочее",
     category_source: "fallback",
     category_confidence: 0,
     needs_category_review: true,
@@ -44,6 +45,7 @@ const defaultTransactions = [
     source: "telegram",
     source_event_id: "telegram:midnight",
     category_code: "income.salary",
+    category_name_ru: "Зарплата",
     category_source: "rules",
     category_confidence: 100,
     needs_category_review: false,
@@ -198,6 +200,32 @@ test("loads both catalogs with credentials and renders type-compatible category 
   expect(fetchMock).toHaveBeenCalledWith("/api/categories?transaction_type=income", {
     credentials: "include",
   });
+});
+
+test("keeps an inactive historical category selected without offering it as an active choice", async () => {
+  mockDashboard({
+    transactions: [
+      {
+        ...defaultTransactions[0],
+        category_code: "expense.archived",
+        category_name_ru: "Архивная категория",
+      },
+    ],
+  });
+  renderList();
+
+  const category = await screen.findByLabelText("Категория: Кофе");
+  expect(category).toHaveValue("expense.archived");
+  const options = within(category).getAllByRole("option");
+  expect(options.map((option) => option.getAttribute("value"))).toEqual([
+    "expense.archived",
+    "expense.groceries",
+    "expense.other",
+  ]);
+  expect(options[0]).toHaveTextContent("Архивная категория");
+  expect(options[0]).toBeDisabled();
+  expect(within(screen.getByLabelText("Фильтр по категории")).queryByText("Архивная категория"))
+    .not.toBeInTheDocument();
 });
 
 test("renders integer kopecks as rubles in the owner timezone", async () => {

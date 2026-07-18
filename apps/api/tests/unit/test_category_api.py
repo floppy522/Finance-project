@@ -133,6 +133,31 @@ def test_transaction_response_preserves_nullable_saving_category_metadata() -> N
     ) == (None, None, None, None)
 
 
+def test_transaction_response_exposes_server_derived_historical_category_name() -> None:
+    transaction = Transaction(
+        id=uuid4(),
+        owner=71,
+        type=TransactionType.EXPENSE,
+        direction=TransactionDirection.NORMAL,
+        amount_kopecks=100_000,
+        occurred_at=datetime(2026, 7, 18, tzinfo=UTC),
+        created_at=datetime(2026, 7, 18, tzinfo=UTC),
+        description="Архивная покупка",
+        source="web",
+        source_event_id=None,
+        category_code="expense.archived",
+        category_source="manual",
+        category_confidence=100,
+        needs_category_review=False,
+    )
+    transaction.category_name_ru = "Архивная категория"
+
+    response = transaction_schemas.TransactionResponse.model_validate(transaction)
+
+    assert response.category_code == "expense.archived"
+    assert response.category_name_ru == "Архивная категория"
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

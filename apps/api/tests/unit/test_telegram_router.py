@@ -8,6 +8,7 @@ from aiogram.types import Update
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
 
+from moneyflow.categories.catalog import CATEGORY_CATALOG
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
 from moneyflow.logging import JsonFormatter
@@ -129,6 +130,15 @@ class EmptyCorrectionRepository:
         return []
 
 
+class ActiveCategoryRepository:
+    async def list_active_codes(self, transaction_type: TransactionType) -> tuple[str, ...]:
+        return tuple(
+            category.code
+            for category in CATEGORY_CATALOG
+            if category.transaction_type is transaction_type
+        )
+
+
 class BatchFakeRepository:
     def __init__(self, *, error: SQLAlchemyError | None = None) -> None:
         self.error = error
@@ -147,8 +157,10 @@ class RecordingProvider:
         self.close_calls = 0
         self.close_error = close_error
 
-    async def classify(self, items: object, examples: object) -> dict[str, object]:
-        del items, examples
+    async def classify(
+        self, items: object, examples: object, allowed_category_codes: object
+    ) -> dict[str, object]:
+        del items, examples, allowed_category_codes
         self.classify_calls += 1
         return {}
 
@@ -162,6 +174,10 @@ def patch_real_batch_graph(
     monkeypatch: pytest.MonkeyPatch,
     repository: BatchFakeRepository,
 ) -> None:
+    monkeypatch.setattr(
+        "moneyflow.telegram.webhook.CategoryRepository",
+        lambda session: ActiveCategoryRepository(),
+    )
     monkeypatch.setattr(
         "moneyflow.telegram.webhook.CategoryCorrectionRepository",
         lambda session: EmptyCorrectionRepository(),

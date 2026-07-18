@@ -2,10 +2,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from moneyflow.categories.catalog import (
-    LOCAL_CATEGORY_RULES,
-    category_matches_type,
-)
+from moneyflow.categories.catalog import LOCAL_CATEGORY_RULES
 from moneyflow.categories.normalization import normalize_description, similarity
 from moneyflow.categories.schemas import (
     CategoryDecision,
@@ -23,21 +20,34 @@ class CorrectionRepository(Protocol):
     ) -> Sequence[CorrectionExample]: ...
 
 
+class ActiveCategoryRepository(Protocol):
+    async def list_active_codes(
+        self, transaction_type: TransactionType
+    ) -> Sequence[str]: ...
+
+
+class CategoryConfigurationError(RuntimeError):
+    pass
+
+
 class CategoryResolver:
     def __init__(
         self,
         *,
         owner: int,
+        category_repository: ActiveCategoryRepository,
         correction_repository: CorrectionRepository,
         provider: CategoryProvider | None = None,
     ) -> None:
         self._owner = owner
+        self._category_repository = category_repository
         self._correction_repository = correction_repository
         self._provider = provider
 
     async def resolve(self, items: Sequence[CategoryInput]) -> dict[str, CategoryDecision]:
         self._validate_items(items)
-        examples_by_type = await self._load_examples(items)
+        active_codes_by_type = await self._load_active_codes(items)
+        examples_by_type = await self._load_examples(items, active_codes_by_type)
         decisions: dict[str, CategoryDecision] = {}
         unresolved: list[CategoryInput] = []
 
@@ -45,16 +55,25 @@ class CategoryResolver:
             examples = examples_by_type[item.transaction_type]
             decision = self._learned_decision(item, examples)
             if decision is None:
-                decision = self._local_rule_decision(item)
+                decision = self._local_rule_decision(
+                    item, active_codes_by_type[item.transaction_type]
+                )
             if decision is None:
                 unresolved.append(item)
             else:
                 decisions[item.item_id] = decision
 
-        provider_decisions = await self._classify(unresolved, examples_by_type)
+        provider_decisions = await self._classify(
+            unresolved, examples_by_type, active_codes_by_type
+        )
         for item in unresolved:
-            decision = self._provider_decision(item, provider_decisions.get(item.item_id))
-            decisions[item.item_id] = decision or self._fallback_decision(item.transaction_type)
+            decision = self._provider_decision(
+                provider_decisions.get(item.item_id),
+                active_codes_by_type[item.transaction_type],
+            )
+            decisions[item.item_id] = decision or self._fallback_decision(
+                item.transaction_type
+            )
 
         return {item.item_id: decisions[item.item_id] for item in items}
 
@@ -69,8 +88,29 @@ class CategoryResolver:
         ):
             raise ValueError("only expense and income items can be categorized")
 
-    async def _load_examples(
+    async def _load_active_codes(
         self, items: Sequence[CategoryInput]
+    ) -> dict[TransactionType, tuple[str, ...]]:
+        transaction_types = dict.fromkeys(item.transaction_type for item in items)
+        active_codes_by_type: dict[TransactionType, tuple[str, ...]] = {}
+        for transaction_type in transaction_types:
+            active_codes = tuple(
+                dict.fromkeys(
+                    await self._category_repository.list_active_codes(transaction_type)
+                )
+            )
+            fallback_code = f"{transaction_type.value}.other"
+            if fallback_code not in active_codes:
+                raise CategoryConfigurationError(
+                    f"active fallback category {fallback_code} is required"
+                )
+            active_codes_by_type[transaction_type] = active_codes
+        return active_codes_by_type
+
+    async def _load_examples(
+        self,
+        items: Sequence[CategoryInput],
+        active_codes_by_type: Mapping[TransactionType, Sequence[str]],
     ) -> dict[TransactionType, tuple[CorrectionExample, ...]]:
         transaction_types = dict.fromkeys(item.transaction_type for item in items)
         loaded: dict[TransactionType, tuple[CorrectionExample, ...]] = {}
@@ -81,7 +121,7 @@ class CategoryResolver:
             loaded[transaction_type] = tuple(
                 example
                 for example in examples
-                if category_matches_type(example.category_code, transaction_type)
+                if example.category_code in active_codes_by_type[transaction_type]
             )
         return loaded
 
@@ -120,12 +160,15 @@ class CategoryResolver:
         )
 
     @staticmethod
-    def _local_rule_decision(item: CategoryInput) -> CategoryDecision | None:
+    def _local_rule_decision(
+        item: CategoryInput, active_codes: Sequence[str]
+    ) -> CategoryDecision | None:
         normalized_words = normalize_description(item.description).split()
         matches = [
             rule
             for rule in LOCAL_CATEGORY_RULES
             if rule.transaction_type is item.transaction_type
+            and rule.category_code in active_codes
             and _contains_phrase(normalized_words, rule.phrase.split())
         ]
         if not matches:
@@ -142,6 +185,7 @@ class CategoryResolver:
         self,
         items: Sequence[CategoryInput],
         examples_by_type: Mapping[TransactionType, Sequence[CorrectionExample]],
+        active_codes_by_type: Mapping[TransactionType, Sequence[str]],
     ) -> Mapping[str, ProviderDecision]:
         if not items or self._provider is None:
             return {}
@@ -162,7 +206,9 @@ class CategoryResolver:
             for item in items
         }
         try:
-            decisions = await self._provider.classify(items, nearest_examples)
+            decisions = await self._provider.classify(
+                items, nearest_examples, active_codes_by_type
+            )
         except Exception:
             return {}
         if not isinstance(decisions, Mapping):
@@ -176,12 +222,13 @@ class CategoryResolver:
 
     @staticmethod
     def _provider_decision(
-        item: CategoryInput, decision: ProviderDecision | None
+        decision: ProviderDecision | None,
+        active_codes: Sequence[str],
     ) -> CategoryDecision | None:
         if (
             decision is None
             or not isinstance(decision.category_code, str)
-            or not category_matches_type(decision.category_code, item.transaction_type)
+            or decision.category_code not in active_codes
         ):
             return None
         confidence = decision.confidence

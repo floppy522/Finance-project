@@ -19,10 +19,17 @@
       database, web, and Caddy services receive neither variable.
 - [ ] Repository and rendered-configuration inspection finds no real API key,
       Telegram token, `.env` file, database dump, age identity, or private key.
-- [ ] A fresh encrypted backup is created and `ops/restore-check.sh` succeeds
-      with `--network none`, the isolated database name, and all required
-      tables: `alembic_version`, `user_settings`, `transactions`, `categories`,
-      and `category_corrections`.
+- [ ] Before any `up` or migration, a fresh encrypted release-0 backup is
+      created and `ops/restore-check.sh legacy` verifies revision
+      `c56238feadc4` and the legacy required tables with `--network none`.
+- [ ] After migration 0002 and before release services start, a second fresh
+      encrypted backup is created and `ops/restore-check.sh release1` verifies
+      revision `a841bc64e210`, `categories`, and `category_corrections` with the
+      same isolated database and `--network none` controls.
+- [ ] Rollback owners understand that release-0 code must not run after 0002;
+      the preferred recovery is a forward fix. Any approved restore uses the
+      exact verified legacy backup and explicitly accepts loss of all writes after
+      that backup; no health-only check is accepted as rollback validation.
 
 ## Post-deploy smoke gates
 

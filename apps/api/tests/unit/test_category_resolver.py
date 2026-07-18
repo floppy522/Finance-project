@@ -21,6 +21,28 @@ from moneyflow.categories.schemas import (
 from moneyflow.models import CategorySource, TransactionType
 
 
+class FakeCategoryRepository:
+    def __init__(
+        self,
+        active_codes: Mapping[TransactionType, Sequence[str]] | None = None,
+    ) -> None:
+        if active_codes is None:
+            active_codes = {
+                transaction_type: [
+                    category.code
+                    for category in CATEGORY_CATALOG
+                    if category.transaction_type is transaction_type
+                ]
+                for transaction_type in (TransactionType.EXPENSE, TransactionType.INCOME)
+            }
+        self._active_codes = active_codes
+        self.requests: list[TransactionType] = []
+
+    async def list_active_codes(self, transaction_type: TransactionType) -> Sequence[str]:
+        self.requests.append(transaction_type)
+        return self._active_codes.get(transaction_type, ())
+
+
 class FakeCorrectionRepository:
     def __init__(
         self,
@@ -40,15 +62,20 @@ class RecordingProvider:
     def __init__(self, decisions: Mapping[str, ProviderDecision]) -> None:
         self.decisions = decisions
         self.calls: list[
-            tuple[tuple[CategoryInput, ...], Mapping[str, Sequence[CorrectionExample]]]
+            tuple[
+                tuple[CategoryInput, ...],
+                Mapping[str, Sequence[CorrectionExample]],
+                Mapping[TransactionType, Sequence[str]],
+            ]
         ] = []
 
     async def classify(
         self,
         items: Sequence[CategoryInput],
         examples: Mapping[str, Sequence[CorrectionExample]],
+        allowed_category_codes: Mapping[TransactionType, Sequence[str]],
     ) -> Mapping[str, ProviderDecision]:
-        self.calls.append((tuple(items), examples))
+        self.calls.append((tuple(items), examples, allowed_category_codes))
         return self.decisions
 
 
@@ -57,6 +84,7 @@ class FailingProvider:
         self,
         items: Sequence[CategoryInput],
         examples: Mapping[str, Sequence[CorrectionExample]],
+        allowed_category_codes: Mapping[TransactionType, Sequence[str]],
     ) -> Mapping[str, ProviderDecision]:
         raise TimeoutError
 
@@ -67,6 +95,7 @@ def resolver_with(
     income_corrections: Sequence[CorrectionExample] = (),
     provider: CategoryProvider | None = None,
     owner: int = 42,
+    active_codes: Mapping[TransactionType, Sequence[str]] | None = None,
 ) -> CategoryResolver:
     repository = FakeCorrectionRepository(
         {
@@ -76,6 +105,7 @@ def resolver_with(
     )
     return CategoryResolver(
         owner=owner,
+        category_repository=FakeCategoryRepository(active_codes),
         correction_repository=repository,
         provider=provider,
     )
@@ -230,6 +260,51 @@ async def test_provider_receives_only_unresolved_items_and_up_to_five_nearest_ex
     assert len(provider.calls[0][1]["3"]) == 5
 
 
+async def test_inactive_categories_are_rejected_from_learned_rules_and_provider() -> None:
+    provider = RecordingProvider(
+        {
+            "learned": ProviderDecision("expense.shopping", 0.91),
+            "rule": ProviderDecision("expense.shopping", 0.91),
+            "ai": ProviderDecision("expense.groceries", 0.91),
+        }
+    )
+    active_codes = {
+        TransactionType.EXPENSE: ("expense.shopping", "expense.other"),
+    }
+    resolver = resolver_with(
+        corrections=[CorrectionExample("магазин", "expense.groceries")],
+        provider=provider,
+        active_codes=active_codes,
+    )
+
+    result = await resolver.resolve(
+        [
+            CategoryInput("learned", "магазин", TransactionType.EXPENSE),
+            CategoryInput("rule", "кофе", TransactionType.EXPENSE),
+            CategoryInput("ai", "неизвестно", TransactionType.EXPENSE),
+        ]
+    )
+
+    assert result["learned"] == CategoryDecision(
+        "expense.shopping", CategorySource.AI, 91, False
+    )
+    assert result["rule"] == CategoryDecision("expense.shopping", CategorySource.AI, 91, False)
+    assert result["ai"] == CategoryDecision("expense.other", CategorySource.FALLBACK, 0, True)
+    assert provider.calls[0][2] == {
+        TransactionType.EXPENSE: ("expense.shopping", "expense.other")
+    }
+    assert provider.calls[0][1]["learned"] == ()
+
+
+async def test_missing_active_other_category_fails_closed() -> None:
+    resolver = resolver_with(
+        active_codes={TransactionType.EXPENSE: ("expense.cafes",)},
+    )
+
+    with pytest.raises(RuntimeError, match="active fallback category expense.other"):
+        await resolver.resolve([CategoryInput("1", "кофе", TransactionType.EXPENSE)])
+
+
 async def test_provider_failure_falls_back_for_review() -> None:
     result = await resolver_with(provider=FailingProvider()).resolve(
         [CategoryInput("4", "неизвестный магазин", TransactionType.EXPENSE)]
@@ -276,7 +351,11 @@ async def test_unknown_and_missing_provider_ids_do_not_affect_known_items() -> N
 
 async def test_correction_reads_are_scoped_to_owner_and_type() -> None:
     repository = FakeCorrectionRepository()
-    resolver = CategoryResolver(owner=987, correction_repository=repository)
+    resolver = CategoryResolver(
+        owner=987,
+        category_repository=FakeCategoryRepository(),
+        correction_repository=repository,
+    )
     await resolver.resolve(
         [
             CategoryInput("1", "кофе", TransactionType.EXPENSE),

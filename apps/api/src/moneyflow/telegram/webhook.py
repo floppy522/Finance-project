@@ -15,12 +15,12 @@ from moneyflow.categories.openai_provider import (
     OpenAICategoryProvider,
     build_category_provider,
 )
-from moneyflow.categories.repository import CategoryCorrectionRepository
+from moneyflow.categories.repository import CategoryCorrectionRepository, CategoryRepository
 from moneyflow.categories.resolver import CategoryResolver
 from moneyflow.categories.schemas import CategoryInput, CorrectionExample, ProviderDecision
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
-from moneyflow.models import UserSettings
+from moneyflow.models import TransactionType, UserSettings
 from moneyflow.telegram.ingestion import BatchIngestionService
 from moneyflow.telegram.router import BotClient, handle_text_update
 from moneyflow.transactions.repository import TransactionRepository
@@ -48,13 +48,14 @@ class _LazyCategoryProvider:
         self,
         items: Sequence[CategoryInput],
         examples: Mapping[str, Sequence[CorrectionExample]],
+        allowed_category_codes: Mapping[TransactionType, Sequence[str]],
     ) -> Mapping[str, ProviderDecision]:
         if not self._initialized:
             self._initialized = True
             self._provider = self._provider_factory(self._settings)
         if self._provider is None:
             return {}
-        return await self._provider.classify(items, examples)
+        return await self._provider.classify(items, examples, allowed_category_codes)
 
     async def aclose(self) -> None:
         if self._closed:
@@ -90,10 +91,12 @@ class BatchIngestionServiceFactory:
     ) -> AsyncIterator[BatchIngestionService]:
         provider = _LazyCategoryProvider(self._provider_factory, settings)
         try:
+            category_repository = CategoryRepository(session)
             correction_repository = CategoryCorrectionRepository(session)
             transaction_repository = TransactionRepository(session)
             resolver = CategoryResolver(
                 owner=settings.authorized_telegram_user_id,
+                category_repository=category_repository,
                 correction_repository=correction_repository,
                 provider=provider,
             )

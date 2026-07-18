@@ -23,6 +23,9 @@ class CategoryRepository:
         )
         return list(rows.all())
 
+    async def list_active_codes(self, transaction_type: TransactionType) -> tuple[str, ...]:
+        return tuple(category.code for category in await self.list_active(transaction_type))
+
     async def find_active(
         self,
         code: str,

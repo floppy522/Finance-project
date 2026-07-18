@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -41,6 +42,19 @@ class MissingStatusResponses:
         return SimpleNamespace(output_parsed=self.parsed, output=())
 
 
+class NeverResponses:
+    async def parse(self, **kwargs: Any) -> object:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+def _allowed() -> dict[TransactionType, tuple[str, ...]]:
+    return {
+        TransactionType.EXPENSE: ("expense.cafes", "expense.other"),
+        TransactionType.INCOME: ("income.salary", "income.other"),
+    }
+
+
 def _item(
     item_id: str = "2",
     description: str = "кофе",
@@ -69,7 +83,7 @@ async def test_provider_uses_responses_structured_output_without_financial_metad
         "3": (CorrectionExample("зарплата", "income.salary"),),
     }
 
-    result = await provider.classify(items, examples)
+    result = await provider.classify(items, examples, _allowed())
 
     assert result == {
         "2": ProviderDecision("expense.cafes", 0.91),
@@ -85,17 +99,7 @@ async def test_provider_uses_responses_structured_output_without_financial_metad
         "description": "кофе",
         "transaction_type": "expense",
         "allowed_category_codes": [
-            "expense.groceries",
             "expense.cafes",
-            "expense.transport",
-            "expense.housing",
-            "expense.health",
-            "expense.shopping",
-            "expense.entertainment",
-            "expense.subscriptions",
-            "expense.travel",
-            "expense.education",
-            "expense.gifts",
             "expense.other",
         ],
         "examples": [{"description": "латте", "category_code": "expense.cafes"}],
@@ -152,7 +156,7 @@ async def test_malformed_or_incomplete_parsed_batch_fails_closed(parsed: object)
     responses = RecordingResponses(parsed, status="completed")
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
-    result = await provider.classify([_item()], {})
+    result = await provider.classify([_item()], {}, _allowed())
 
     assert result == {}
 
@@ -164,7 +168,7 @@ async def test_missing_one_of_multiple_ids_fails_closed_for_whole_batch() -> Non
     )
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
-    result = await provider.classify([_item(), _item("3", "такси")], {})
+    result = await provider.classify([_item(), _item("3", "такси")], {}, _allowed())
 
     assert result == {}
 
@@ -176,14 +180,14 @@ async def test_non_completed_response_fails_closed(status: str | None) -> None:
         responses=RecordingResponses(parsed, status=status), model="test-model"
     )
 
-    assert await provider.classify([_item()], {}) == {}
+    assert await provider.classify([_item()], {}, _allowed()) == {}
 
 
 async def test_response_without_status_fails_closed() -> None:
     parsed = AIBatch(items=[AIItem(item_id="2", category_code="expense.cafes", confidence=0.9)])
     provider = OpenAICategoryProvider(responses=MissingStatusResponses(parsed), model="test-model")
 
-    assert await provider.classify([_item()], {}) == {}
+    assert await provider.classify([_item()], {}, _allowed()) == {}
 
 
 async def test_refusal_fails_closed_even_if_parsed_output_is_present() -> None:
@@ -194,20 +198,35 @@ async def test_refusal_fails_closed_even_if_parsed_output_is_present() -> None:
         model="test-model",
     )
 
-    assert await provider.classify([_item()], {}) == {}
+    assert await provider.classify([_item()], {}, _allowed()) == {}
 
 
 async def test_provider_exception_fails_closed() -> None:
     provider = OpenAICategoryProvider(responses=FailingResponses(), model="test-model")
 
-    assert await provider.classify([_item()], {}) == {}
+    assert await provider.classify([_item()], {}, _allowed()) == {}
+
+
+async def test_provider_enforces_strict_wall_clock_deadline() -> None:
+    provider = OpenAICategoryProvider(
+        responses=NeverResponses(),
+        model="test-model",
+        timeout_seconds=0.01,
+    )
+
+    result = await asyncio.wait_for(
+        provider.classify([_item()], {}, _allowed()),
+        timeout=0.2,
+    )
+
+    assert result == {}
 
 
 async def test_duplicate_input_ids_fail_closed_without_calling_api() -> None:
     responses = RecordingResponses(AIBatch(items=[]), status="completed")
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
-    assert await provider.classify([_item(), _item()], {}) == {}
+    assert await provider.classify([_item(), _item()], {}, _allowed()) == {}
     assert responses.calls == 0
 
 
@@ -215,7 +234,7 @@ async def test_empty_input_returns_without_calling_api() -> None:
     responses = RecordingResponses(AIBatch(items=[]), status="completed")
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
-    assert await provider.classify([], {}) == {}
+    assert await provider.classify([], {}, _allowed()) == {}
     assert responses.calls == 0
 
 

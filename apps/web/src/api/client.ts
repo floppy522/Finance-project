@@ -15,6 +15,7 @@ export interface TransactionResponse {
   source: string;
   source_event_id: string | null;
   category_code: string | null;
+  category_name_ru: string | null;
   category_source: CategorySource | null;
   category_confidence: number | null;
   needs_category_review: boolean | null;
