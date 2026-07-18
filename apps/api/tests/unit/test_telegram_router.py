@@ -10,9 +10,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
+from moneyflow.logging import JsonFormatter
 from moneyflow.main import create_app
 from moneyflow.models import CategorySource, Transaction, TransactionDirection, TransactionType
-from moneyflow.telegram.batch_parser import BatchParseResult, RejectedInputLine
+from moneyflow.telegram.batch_parser import (
+    BatchParseResult,
+    RejectedInputLine,
+    parse_batch_message,
+)
 from moneyflow.telegram.ingestion import BatchIngestionResult
 from moneyflow.telegram.router import _format_batch_summary, handle_text_update
 from moneyflow.telegram.webhook import (
@@ -22,6 +27,7 @@ from moneyflow.telegram.webhook import (
     get_owner_timezone,
     get_telegram_login_service,
 )
+from moneyflow.transactions.repository import StoredTransaction
 
 
 MESSAGE_TIME = datetime(2026, 7, 18, 9, 30, tzinfo=UTC)
@@ -103,6 +109,67 @@ class FailingScalarSession:
     async def scalar(self, statement: object) -> object:
         del statement
         raise AssertionError("short-circuited update reached owner timezone lookup")
+
+
+class BatchFakeSession:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class EmptyCorrectionRepository:
+    async def list_for_type(self, owner: int, transaction_type: TransactionType) -> list[object]:
+        del owner, transaction_type
+        return []
+
+
+class BatchFakeRepository:
+    def __init__(self, *, error: SQLAlchemyError | None = None) -> None:
+        self.error = error
+        self.transactions: list[Transaction] = []
+
+    async def add_with_status(self, transaction: Transaction) -> StoredTransaction:
+        if self.error is not None:
+            raise self.error
+        self.transactions.append(transaction)
+        return StoredTransaction(transaction, created=True)
+
+
+class RecordingProvider:
+    def __init__(self, *, close_error: Exception | None = None) -> None:
+        self.classify_calls = 0
+        self.close_calls = 0
+        self.close_error = close_error
+
+    async def classify(self, items: object, examples: object) -> dict[str, object]:
+        del items, examples
+        self.classify_calls += 1
+        return {}
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def patch_real_batch_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: BatchFakeRepository,
+) -> None:
+    monkeypatch.setattr(
+        "moneyflow.telegram.webhook.CategoryCorrectionRepository",
+        lambda session: EmptyCorrectionRepository(),
+    )
+    monkeypatch.setattr(
+        "moneyflow.telegram.webhook.TransactionRepository",
+        lambda session: repository,
+    )
 
 
 def timezone_loader(timezone: str):
@@ -609,29 +676,159 @@ def test_summary_omits_one_oversized_row_without_slicing_it() -> None:
     assert summary.endswith("…и ещё 1")
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_saved"),
+    [("непонятно", 0), ("кофе 350", 1)],
+    ids=("rejected-only", "local-rule-only"),
+)
+async def test_provider_factory_is_not_called_without_unresolved_items(
+    text: str,
+    expected_saved: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BatchFakeSession()
+    repository = BatchFakeRepository()
+    patch_real_batch_graph(monkeypatch, repository)
+    provider = RecordingProvider()
+    factory_calls = 0
+
+    def provider_factory(settings: Settings) -> RecordingProvider:
+        nonlocal factory_calls
+        del settings
+        factory_calls += 1
+        return provider
+
+    batch_factory = await get_batch_ingestion_service(provider_factory)  # type: ignore[arg-type]
+    parsed = parse_batch_message(text, MESSAGE_TIME, "Europe/Moscow", 42)
+    async with batch_factory.open(  # type: ignore[arg-type]
+        session,
+        Settings(authorized_telegram_user_id=1),
+    ) as service:
+        result = await service.ingest(parsed)
+
+    assert len(result.saved) == expected_saved
+    assert factory_calls == 0
+    assert provider.classify_calls == 0
+    assert provider.close_calls == 0
+
+
+async def test_provider_factory_exception_falls_back_and_still_saves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BatchFakeSession()
+    repository = BatchFakeRepository()
+    patch_real_batch_graph(monkeypatch, repository)
+
+    def failing_factory(settings: Settings) -> None:
+        del settings
+        raise RuntimeError("amount=98765 description=Секрет token=login-secret")
+
+    batch_factory = await get_batch_ingestion_service(failing_factory)  # type: ignore[arg-type]
+    parsed = parse_batch_message("неизвестная покупка 350", MESSAGE_TIME, "Europe/Moscow", 42)
+    async with batch_factory.open(  # type: ignore[arg-type]
+        session,
+        Settings(authorized_telegram_user_id=1),
+    ) as service:
+        result = await service.ingest(parsed)
+
+    assert len(result.saved) == 1
+    assert result.saved[0].category_code == "expense.other"
+    assert result.saved[0].category_source is CategorySource.FALLBACK
+    assert result.saved[0].needs_category_review is True
+    assert session.commits == 1
+
+
+async def test_provider_close_exception_after_success_does_not_suppress_summary_or_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BatchFakeSession()
+    repository = BatchFakeRepository()
+    patch_real_batch_graph(monkeypatch, repository)
+    provider = RecordingProvider(
+        close_error=RuntimeError(
+            "amount=98765 description=Секрет token=login-secret session=session-secret"
+        )
+    )
+    batch_factory = await get_batch_ingestion_service(lambda settings: provider)  # type: ignore[arg-type]
+    bot = RecordingBot()
+    records: list[logging.LogRecord] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    webhook_logger = logging.getLogger("moneyflow.telegram.webhook")
+    monkeypatch.setattr(webhook_logger, "handlers", [Capture()])
+    monkeypatch.setattr(webhook_logger, "propagate", False)
+
+    await handle_text_update(
+        make_update("неизвестная покупка 350"),
+        bot=bot,
+        settings=Settings(authorized_telegram_user_id=1),
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=lambda: batch_factory.open(  # type: ignore[arg-type]
+            session,
+            Settings(authorized_telegram_user_id=1),
+        ),
+        login_service=RecordingLoginService(),  # type: ignore[arg-type]
+    )
+
+    assert session.commits == 1
+    assert provider.close_calls == 1
+    assert len(bot.messages) == 1
+    assert bot.messages[0][1].startswith("Сохранено: 1 операция")
+    assert [record.event for record in records] == ["category_provider_close_failed"]
+    rendered = JsonFormatter().format(records[0])
+    assert "RuntimeError" in rendered
+    for private in ("98765", "Секрет", "login-secret", "session-secret"):
+        assert private not in rendered
+
+
+async def test_provider_close_exception_does_not_mask_ingestion_database_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BatchFakeSession()
+    repository = BatchFakeRepository(
+        error=SQLAlchemyError("database amount=98765 description=Секрет")
+    )
+    patch_real_batch_graph(monkeypatch, repository)
+    provider = RecordingProvider(close_error=RuntimeError("close token=login-secret"))
+    batch_factory = await get_batch_ingestion_service(lambda settings: provider)  # type: ignore[arg-type]
+    bot = RecordingBot()
+
+    await handle_text_update(
+        make_update("неизвестная покупка 350"),
+        bot=bot,
+        settings=Settings(authorized_telegram_user_id=1),
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=lambda: batch_factory.open(  # type: ignore[arg-type]
+            session,
+            Settings(authorized_telegram_user_id=1),
+        ),
+        login_service=RecordingLoginService(),  # type: ignore[arg-type]
+    )
+
+    assert session.commits == 0
+    assert session.rollbacks == 1
+    assert provider.close_calls == 1
+    assert bot.messages == [
+        (
+            1,
+            "Не удалось сохранить операции из-за временной ошибки. Попробуйте ещё раз позже.",
+        )
+    ]
+
+
 async def test_factory_created_category_provider_is_closed_in_async_dependency_finally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Provider:
-        def __init__(self) -> None:
-            self.close_calls = 0
-
-        async def aclose(self) -> None:
-            self.close_calls += 1
-
-    provider = Provider()
+    session = BatchFakeSession()
+    repository = BatchFakeRepository()
+    patch_real_batch_graph(monkeypatch, repository)
+    provider = RecordingProvider()
     factory_calls = 0
 
-    async def classify(
-        items: object,
-        examples: object,
-    ) -> dict[str, object]:
-        del items, examples
-        return {}
-
-    provider.classify = classify  # type: ignore[attr-defined]
-
-    def factory(settings: Settings) -> Provider:
+    def factory(settings: Settings) -> RecordingProvider:
         nonlocal factory_calls
         del settings
         factory_calls += 1
@@ -646,12 +843,22 @@ async def test_factory_created_category_provider_is_closed_in_async_dependency_f
 
     batch_factory = await get_batch_ingestion_service(provider_factory)
     async with batch_factory.open(  # type: ignore[arg-type]
-        object(),
+        session,
         Settings(authorized_telegram_user_id=1, openai_api_key="not-a-real-secret"),
-    ):
+    ) as service:
+        assert factory_calls == 0
+        await service.ingest(
+            parse_batch_message(
+                "неизвестная покупка 350",
+                MESSAGE_TIME,
+                "Europe/Moscow",
+                42,
+            )
+        )
         assert factory_calls == 1
 
     assert factory_calls == 1
+    assert provider.classify_calls == 1
     assert provider.close_calls == 1
 
 
@@ -668,6 +875,7 @@ async def test_batch_ingestion_dependency_wires_owner_scoped_repositories_and_is
             self.close_calls += 1
 
     provider = Provider()
+    provider_factory_calls = 0
     correction_repository = object()
     transaction_repository = object()
     captured: dict[str, object] = {}
@@ -699,7 +907,13 @@ async def test_batch_ingestion_dependency_wires_owner_scoped_repositories_and_is
     monkeypatch.setattr("moneyflow.telegram.webhook.CategoryResolver", resolver_factory)
     monkeypatch.setattr("moneyflow.telegram.webhook.BatchIngestionService", service_factory)
 
-    batch_factory = await get_batch_ingestion_service(lambda settings: provider)  # type: ignore[arg-type]
+    def provider_factory(settings: Settings) -> Provider:
+        nonlocal provider_factory_calls
+        del settings
+        provider_factory_calls += 1
+        return provider
+
+    batch_factory = await get_batch_ingestion_service(provider_factory)  # type: ignore[arg-type]
     assert captured == {}
 
     async with batch_factory.open(  # type: ignore[arg-type]
@@ -707,18 +921,20 @@ async def test_batch_ingestion_dependency_wires_owner_scoped_repositories_and_is
         Settings(authorized_telegram_user_id=991),
     ) as result:
         assert result == "service"
+    resolver_kwargs = captured.pop("resolver_kwargs")
+    assert isinstance(resolver_kwargs, dict)
+    assert resolver_kwargs["owner"] == 991
+    assert resolver_kwargs["correction_repository"] is correction_repository
+    assert resolver_kwargs["provider"] is not provider
+    assert callable(getattr(resolver_kwargs["provider"], "classify"))
     assert captured == {
         "correction_session": session,
         "transaction_session": session,
-        "resolver_kwargs": {
-            "owner": 991,
-            "correction_repository": correction_repository,
-            "provider": provider,
-        },
         "service_args": (session, 991),
         "service_kwargs": {
             "resolver": "resolver",
             "repository": transaction_repository,
         },
     }
-    assert provider.close_calls == 1
+    assert provider_factory_calls == 0
+    assert provider.close_calls == 0

@@ -203,3 +203,76 @@ Resolved 60 packages
 The PostgreSQL integration suite remains execution-deferred because neither
 `ENVIRONMENT=test` nor `TEST_DATABASE_URL` is present. It was collection-checked only; no
 database, network, Telegram, OpenAI, or secret-bearing call was made.
+
+## Repeat-review follow-up — lazy provider construction and non-masking cleanup
+
+The remaining Important provider-lifecycle finding on commit `860757a` was handled in another
+strict RED/GREEN cycle.
+
+### RED evidence
+
+Six focused regressions failed for the expected pre-fix reasons:
+
+```text
+uv run pytest tests/unit/test_telegram_router.py \
+  -k 'provider_factory_is_not_called or provider_factory_exception or \
+  provider_close_exception or factory_created_category_provider' -q
+
+6 failed, 41 deselected
+```
+
+- rejected-only and local-rule-only batches each called the SDK provider factory once;
+- a provider-factory exception escaped `BatchIngestionServiceFactory.open()` before the
+  resolver's guarded provider call and prevented fallback persistence;
+- an `aclose()` exception escaped after a committed batch and prevented its summary;
+- another `aclose()` exception replaced an in-flight SQLAlchemy persistence error, preventing
+  the exact generic database response;
+- the normal lifecycle regression proved factory construction was still eager at context open.
+
+### Fix
+
+`BatchIngestionServiceFactory.open()` now creates only a `_LazyCategoryProvider` wrapper
+inside the already deferred graph. The wrapper owns the settings and overrideable provider
+factory but invokes that factory only from `classify()`. Consequently:
+
+- fully rejected batches and batches resolved entirely by local rules never construct an SDK
+  provider;
+- a factory exception occurs inside `CategoryResolver._classify()` and therefore follows the
+  existing review fallback path instead of escaping;
+- a provider that was constructed is awaited and closed exactly once;
+- close failures are best-effort: they emit only the allowlisted static event, source,
+  outcome, and exception type, without exception text or payload, and are then suppressed;
+- cleanup cannot replace an in-flight SQLAlchemy error or turn a committed successful batch
+  into an HTTP 500/no-summary outcome.
+
+### Repeat-review GREEN evidence
+
+Fresh verification after the lifecycle fix:
+
+```text
+uv run pytest tests/unit/test_telegram_router.py tests/unit/test_logging.py -q
+58 passed in 2.17s
+
+uv run pytest tests/unit -q
+210 passed, 1 warning in 2.64s
+
+uv run pytest tests/integration/test_telegram_webhook.py --collect-only -q
+10 tests collected in 2.03s
+
+uv run ruff check src/moneyflow/telegram src/moneyflow/logging.py \
+  tests/unit/test_telegram_router.py tests/integration/test_telegram_webhook.py \
+  tests/unit/test_logging.py
+All checks passed!
+
+uv run ruff format --check <five focused Python files>
+5 files already formatted
+
+uv run mypy
+Success: no issues found in 28 source files
+
+uv lock --check
+Resolved 60 packages
+```
+
+Integration execution remains safely deferred without explicit test-only PostgreSQL settings.
+No database, network, Telegram, OpenAI, or real-secret call was made.

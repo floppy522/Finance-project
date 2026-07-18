@@ -1,6 +1,6 @@
 import logging
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Annotated, Any
 
@@ -17,6 +17,7 @@ from moneyflow.categories.openai_provider import (
 )
 from moneyflow.categories.repository import CategoryCorrectionRepository
 from moneyflow.categories.resolver import CategoryResolver
+from moneyflow.categories.schemas import CategoryInput, CorrectionExample, ProviderDecision
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
 from moneyflow.models import UserSettings
@@ -31,6 +32,50 @@ logger = logging.getLogger(__name__)
 CategoryProviderFactory = Callable[[Settings], OpenAICategoryProvider | None]
 
 
+class _LazyCategoryProvider:
+    def __init__(
+        self,
+        provider_factory: CategoryProviderFactory,
+        settings: Settings,
+    ) -> None:
+        self._provider_factory = provider_factory
+        self._settings = settings
+        self._provider: OpenAICategoryProvider | None = None
+        self._initialized = False
+        self._closed = False
+
+    async def classify(
+        self,
+        items: Sequence[CategoryInput],
+        examples: Mapping[str, Sequence[CorrectionExample]],
+    ) -> Mapping[str, ProviderDecision]:
+        if not self._initialized:
+            self._initialized = True
+            self._provider = self._provider_factory(self._settings)
+        if self._provider is None:
+            return {}
+        return await self._provider.classify(items, examples)
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._provider is None:
+            return
+        try:
+            await self._provider.aclose()
+        except Exception as error:
+            logger.warning(
+                "category_provider_close_failed",
+                extra={
+                    "event": "category_provider_close_failed",
+                    "source": "openai",
+                    "outcome": "failed",
+                    "error_type": type(error).__name__,
+                },
+            )
+
+
 class BatchIngestionServiceFactory:
     """Build the request graph only after Telegram preflight checks pass."""
 
@@ -43,7 +88,7 @@ class BatchIngestionServiceFactory:
         session: AsyncSession,
         settings: Settings,
     ) -> AsyncIterator[BatchIngestionService]:
-        provider = self._provider_factory(settings)
+        provider = _LazyCategoryProvider(self._provider_factory, settings)
         try:
             correction_repository = CategoryCorrectionRepository(session)
             transaction_repository = TransactionRepository(session)
@@ -59,8 +104,7 @@ class BatchIngestionServiceFactory:
                 repository=transaction_repository,
             )
         finally:
-            if provider is not None:
-                await provider.aclose()
+            await provider.aclose()
 
 
 async def get_bot(
