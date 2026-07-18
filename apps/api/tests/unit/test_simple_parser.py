@@ -33,7 +33,13 @@ def test_parses_fractional_rubles_with_decimal_arithmetic() -> None:
     assert result.amount_kopecks == 35_025
 
 
-@pytest.mark.parametrize("text", ["", "кофе", "350", "кофе -350", "кофе 0"])
+@pytest.mark.parametrize("text", ["", "кофе", "350", "кофе 0"])
 def test_rejects_ambiguous_input(text: str) -> None:
     with pytest.raises(ValueError, match="Формат"):
         parse_simple_expense(text, FIXED_NOW, "telegram:12")
+
+
+@pytest.mark.parametrize("text", ["кофе 350\nтакси 780", "зарплата +150000"])
+def test_rejects_multiline_and_income_input(text: str) -> None:
+    with pytest.raises(ValueError, match="Формат"):
+        parse_simple_expense(text, FIXED_NOW, "telegram:13")
