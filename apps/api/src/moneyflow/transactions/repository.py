@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -65,11 +66,32 @@ class TransactionRepository:
             raise RuntimeError("idempotent transaction insert did not produce a winner")
         return StoredTransaction(winner, created=False)
 
-    async def list_recent(self, telegram_user_id: int, limit: int) -> list[Transaction]:
+    async def find_owned(self, transaction_id: UUID, owner: int) -> Transaction | None:
         rows = await self._session.scalars(
-            select(Transaction)
-            .where(Transaction.owner == telegram_user_id)
-            .order_by(Transaction.occurred_at.desc(), Transaction.created_at.desc())
-            .limit(limit)
+            select(Transaction).where(
+                Transaction.id == transaction_id,
+                Transaction.owner == owner,
+            )
+        )
+        return rows.one_or_none()
+
+    async def list_recent(
+        self,
+        telegram_user_id: int,
+        limit: int,
+        category_code: str | None = None,
+        needs_category_review: bool | None = None,
+    ) -> list[Transaction]:
+        statement = select(Transaction).where(Transaction.owner == telegram_user_id)
+        if category_code is not None:
+            statement = statement.where(Transaction.category_code == category_code)
+        if needs_category_review is not None:
+            statement = statement.where(
+                Transaction.needs_category_review.is_(needs_category_review)
+            )
+        rows = await self._session.scalars(
+            statement.order_by(
+                Transaction.occurred_at.desc(), Transaction.created_at.desc()
+            ).limit(limit)
         )
         return list(rows)

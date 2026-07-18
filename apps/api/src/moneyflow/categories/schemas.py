@@ -2,6 +2,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic import BaseModel, ConfigDict
+
 from moneyflow.models import CategorySource, TransactionType
 
 
@@ -38,3 +40,11 @@ class CategoryProvider(Protocol):
         items: Sequence[CategoryInput],
         examples: Mapping[str, Sequence[CorrectionExample]],
     ) -> Mapping[str, ProviderDecision]: ...
+
+
+class CategoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    code: str
+    transaction_type: TransactionType
+    name_ru: str

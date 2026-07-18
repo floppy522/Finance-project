@@ -112,3 +112,47 @@ async def test_legacy_add_returns_only_the_transaction() -> None:
     stored = await TransactionRepository(session).add(transaction)
 
     assert stored is transaction
+
+
+async def test_list_recent_compiles_owner_scoped_optional_filters_before_limit() -> None:
+    session = MagicMock()
+    rows = MagicMock()
+    rows.__iter__.return_value = iter(())
+    session.scalars = AsyncMock(return_value=rows)
+
+    await TransactionRepository(session).list_recent(
+        71,
+        37,
+        category_code="expense.groceries",
+        needs_category_review=False,
+    )
+
+    statement = session.scalars.await_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "transactions.owner =" in sql
+    assert "transactions.category_code =" in sql
+    assert "transactions.needs_category_review IS false" in sql
+    assert "ORDER BY transactions.occurred_at DESC" in sql
+    assert "LIMIT" in sql
+    assert compiled.params["owner_1"] == 71
+    assert compiled.params["category_code_1"] == "expense.groceries"
+    assert compiled.params["param_1"] == 37
+
+
+async def test_find_owned_compiles_id_and_owner_predicates() -> None:
+    transaction_id = uuid4()
+    session = MagicMock()
+    rows = MagicMock()
+    rows.one_or_none.return_value = None
+    session.scalars = AsyncMock(return_value=rows)
+
+    assert await TransactionRepository(session).find_owned(transaction_id, 71) is None
+
+    statement = session.scalars.await_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "transactions.id =" in sql
+    assert "transactions.owner =" in sql
+    assert compiled.params["id_1"] == transaction_id
+    assert compiled.params["owner_1"] == 71

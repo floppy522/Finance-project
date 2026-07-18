@@ -18,11 +18,23 @@ class FakeSession:
 
 
 class FakeTransactionRepository:
+    def __init__(self) -> None:
+        self.list_calls: list[tuple[int, int, str | None, bool | None]] = []
+
     async def add(self, transaction: Transaction) -> Transaction:
         transaction.created_at = datetime.now(UTC)
         return transaction
 
-    async def list_recent(self, telegram_user_id: int, limit: int) -> list[Transaction]:
+    async def list_recent(
+        self,
+        telegram_user_id: int,
+        limit: int,
+        category_code: str | None = None,
+        needs_category_review: bool | None = None,
+    ) -> list[Transaction]:
+        self.list_calls.append(
+            (telegram_user_id, limit, category_code, needs_category_review)
+        )
         return []
 
 
@@ -134,3 +146,19 @@ def test_build_validates_and_constructs_without_persisting_or_committing() -> No
 async def test_list_limit_must_be_between_1_and_500(limit: int) -> None:
     with pytest.raises(ValueError, match="limit must be between 1 and 500"):
         await service().list_recent(limit=limit)
+
+
+async def test_list_passes_owner_filters_and_limit_to_repository() -> None:
+    repository = FakeTransactionRepository()
+    transaction_service = TransactionService(
+        FakeSession(),
+        71,
+        repository=repository,
+    )
+
+    assert await transaction_service.list_recent(
+        limit=37,
+        category_code="expense.groceries",
+        needs_category_review=False,
+    ) == []
+    assert repository.list_calls == [(71, 37, "expense.groceries", False)]

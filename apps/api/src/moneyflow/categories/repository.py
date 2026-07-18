@@ -23,6 +23,20 @@ class CategoryRepository:
         )
         return list(rows.all())
 
+    async def find_active(
+        self,
+        code: str,
+        transaction_type: TransactionType | None = None,
+    ) -> Category | None:
+        statement = select(Category).where(
+            Category.code == code,
+            Category.is_active.is_(True),
+        )
+        if transaction_type is not None:
+            statement = statement.where(Category.transaction_type == transaction_type)
+        rows = await self._session.scalars(statement)
+        return rows.one_or_none()
+
 
 class CategoryCorrectionRepository:
     def __init__(self, session: AsyncSession) -> None:

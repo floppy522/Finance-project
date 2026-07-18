@@ -13,7 +13,13 @@ from moneyflow.transactions.schemas import CreateTransactionCommand
 class Repository(Protocol):
     async def add(self, transaction: Transaction) -> Transaction: ...
 
-    async def list_recent(self, telegram_user_id: int, limit: int) -> list[Transaction]: ...
+    async def list_recent(
+        self,
+        telegram_user_id: int,
+        limit: int,
+        category_code: str | None = None,
+        needs_category_review: bool | None = None,
+    ) -> list[Transaction]: ...
 
 
 class Session(Protocol):
@@ -81,7 +87,17 @@ class TransactionService:
             needs_category_review=needs_review,
         )
 
-    async def list_recent(self, limit: int = 100) -> list[Transaction]:
+    async def list_recent(
+        self,
+        limit: int = 100,
+        category_code: str | None = None,
+        needs_category_review: bool | None = None,
+    ) -> list[Transaction]:
         if not 1 <= limit <= 500:
             raise ValueError("limit must be between 1 and 500")
-        return await self._repository.list_recent(self._telegram_user_id, limit)
+        return await self._repository.list_recent(
+            self._telegram_user_id,
+            limit,
+            category_code,
+            needs_category_review,
+        )

@@ -51,3 +51,13 @@ class TransactionResponse(BaseModel):
     description: str
     source: str
     source_event_id: str | None
+    category_code: str | None
+    category_source: CategorySource | None
+    category_confidence: int | None
+    needs_category_review: bool | None
+
+
+class UpdateTransactionCategoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category_code: str = Field(min_length=1, max_length=64)
