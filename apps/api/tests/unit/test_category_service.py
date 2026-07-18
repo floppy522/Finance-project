@@ -16,6 +16,7 @@ from moneyflow.models import (
     TransactionDirection,
     TransactionType,
 )
+from moneyflow.transactions.schemas import TransactionResponse
 
 
 class FakeSession:
@@ -31,6 +32,16 @@ class FakeSession:
 
     async def rollback(self) -> None:
         self.rollbacks += 1
+
+
+class ExpiringCategoryNameSession(FakeSession):
+    def __init__(self, stored: Transaction) -> None:
+        super().__init__()
+        self._stored = stored
+
+    async def commit(self) -> None:
+        await super().commit()
+        self._stored.__dict__.pop("category_name_ru", None)
 
 
 class FakeCategoryRepository:
@@ -213,6 +224,29 @@ async def test_manual_update_is_owner_scoped_sets_exact_metadata_and_learns() ->
     assert fake_session.rollbacks == 0
 
 
+async def test_manual_update_serializes_new_category_name_after_commit_expiration() -> None:
+    stored = transaction()
+    stored.created_at = datetime(2026, 7, 18, tzinfo=UTC)
+    stored.category_name_ru = "Прочее"
+    chosen = category("expense.cafes")
+    chosen.name_ru = "Кафе и рестораны"
+    fake_session = ExpiringCategoryNameSession(stored)
+    category_service, _, _, _, _ = service(
+        session=fake_session,
+        categories=[chosen],
+        stored_transaction=stored,
+    )
+
+    updated = await category_service.update_transaction_category(stored.id, chosen.code)
+    assert updated.__dict__["category_name_ru"] == "Кафе и рестораны"
+    response = TransactionResponse.model_validate(updated)
+
+    assert response.category_code == "expense.cafes"
+    assert response.category_name_ru == "Кафе и рестораны"
+    assert fake_session.commits == 1
+    assert fake_session.rollbacks == 0
+
+
 async def test_missing_or_foreign_transaction_has_one_not_found_result() -> None:
     transaction_id = uuid4()
     category_service, fake_session, _, corrections, transactions = service(
@@ -295,6 +329,7 @@ async def test_correction_failure_rolls_back_and_reraises() -> None:
 async def test_commit_failure_rolls_back_and_reraises() -> None:
     fake_session = FakeSession(commit_error=RuntimeError("commit failed"))
     stored = transaction()
+    stored.category_name_ru = "Прочее"
     category_service, _, _, corrections, _ = service(
         session=fake_session,
         categories=[category()],
@@ -307,3 +342,4 @@ async def test_commit_failure_rolls_back_and_reraises() -> None:
     assert len(corrections.upserts) == 1
     assert fake_session.commits == 1
     assert fake_session.rollbacks == 1
+    assert stored.category_name_ru == "Прочее"

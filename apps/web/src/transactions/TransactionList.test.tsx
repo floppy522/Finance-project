@@ -54,6 +54,7 @@ const defaultTransactions = [
 
 interface MockFetchOptions {
   transactions?: typeof defaultTransactions;
+  expenseCategories?: typeof expenseCategories;
   timezone?: string;
   patchStatus?: number;
   patchGate?: Promise<void>;
@@ -113,7 +114,7 @@ function mockDashboard(options: MockFetchOptions = {}) {
     if (url.pathname === "/api/categories") {
       return jsonResponse(
         url.searchParams.get("transaction_type") === "expense"
-          ? expenseCategories
+          ? options.expenseCategories ?? expenseCategories
           : incomeCategories,
       );
     }
@@ -226,6 +227,24 @@ test("keeps an inactive historical category selected without offering it as an a
   expect(options[0]).toBeDisabled();
   expect(within(screen.getByLabelText("Фильтр по категории")).queryByText("Архивная категория"))
     .not.toBeInTheDocument();
+});
+
+test("shows an inactive historical name read-only when no active compatible category exists", async () => {
+  mockDashboard({
+    expenseCategories: [],
+    transactions: [
+      {
+        ...defaultTransactions[0],
+        category_code: "expense.archived",
+        category_name_ru: "Архивная категория",
+      },
+    ],
+  });
+  renderList();
+
+  expect(await screen.findByText("Архивная категория")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Категория: Кофе")).not.toBeInTheDocument();
+  expect(screen.queryByText("Без категории")).not.toBeInTheDocument();
 });
 
 test("renders integer kopecks as rubles in the owner timezone", async () => {

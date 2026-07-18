@@ -107,6 +107,7 @@ class CategoryService:
                 category_code=category.code,
             )
             await self._session.commit()
+            transaction.category_name_ru = category.name_ru
             return transaction
         except Exception:
             await self._session.rollback()

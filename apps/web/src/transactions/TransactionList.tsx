@@ -257,7 +257,9 @@ export function TransactionList() {
                           )}
                         </div>
                       ) : (
-                        <span className="category-empty">Без категории</span>
+                        <span className="category-empty">
+                          {transaction.category_name_ru ?? "Без категории"}
+                        </span>
                       )}
                     </td>
                     <td>{rubles.format(transaction.amount_kopecks / 100)}</td>
