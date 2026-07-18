@@ -4,20 +4,21 @@
 
 Implemented only Task 6:
 
-- the authorized owner/private-chat and command checks remain ahead of batch parsing and
-  ingestion; the optional category provider is lazy, so its factory and API boundary are not
-  reached by rejected updates, commands, or locally resolved items;
+- the webhook dependency graph resolves only lightweight closures; secret, authorized-owner,
+  private-chat, and command checks all finish before the provider, repositories, resolver, or
+  ingestion service are constructed;
 - Telegram's exact message timestamp, the owner's persisted timezone, update ID, and original
   line numbers feed `parse_batch_message`;
-- one owner-scoped `BatchIngestionService` is wired from the request session, category
-  correction repository, transaction repository, resolver, and overrideable lazy provider;
+- one owner-scoped `BatchIngestionService` is wired after preflight from the request session,
+  category correction repository, transaction repository, resolver, and overrideable provider
+  factory;
 - a provider created by the factory is always closed by `await provider.aclose()` in the async
-  dependency's `finally` block;
+  batch-context `finally` block;
 - summaries distinguish saved, previously saved (duplicate), and rejected rows, group saved
   rows by local displayed date, use Russian plural forms, fixed catalog names, explicit income
   and expense signs, and two decimal ruble amounts;
-- only the first 20 result rows are rendered, with an accurate `…и ещё N` count and a hard
-  4096-character Telegram limit;
+- at most 20 complete result rows are rendered, with an accurate `…и ещё N` count based on
+  rows actually rendered and a hard 4096-character Telegram limit; rows are never sliced;
 - database failures return the exact generic Russian message and never expose exception text;
 - batch logs contain only allowlisted update/status/count metadata, never descriptions,
   amounts, Telegram text, tokens, or sessions;
@@ -129,3 +130,76 @@ timezone fail-closed behavior, and existing login/logout flows.
   financial/authentication values.
 - Scope: only Telegram routing/wiring, logging count allowlisting, Task 6 tests, and this
   report changed.
+
+## Review follow-up — full preflight deferral and row-safe budgeting
+
+All three Important review findings were handled in a separate strict RED/GREEN cycle based
+on commit `bd1451e`.
+
+### RED evidence
+
+Before the fixes, the focused review command produced eight expected failures:
+
+```text
+uv run pytest tests/unit/test_telegram_router.py \
+  -k 'construct_batch_graph or timezone_database_error or character_budget or oversized_row' -q
+
+8 failed, 32 deselected
+```
+
+- wrong secret, foreign user, group chat, `/login`, and `/logout` each returned 500 because
+  FastAPI eagerly constructed the category/ingestion graph before route preflight;
+- a SQLAlchemy error from the owner-timezone read returned 500 instead of the exact generic
+  Telegram message;
+- twenty approximately 220-character rejection rows were cut mid-row and had no accurate
+  omitted count;
+- one oversized row was cut into the response rather than omitted atomically.
+
+### Fix
+
+- `get_batch_ingestion_service` now returns only a lightweight context factory. It creates the
+  provider, both repositories, resolver, and ingestion service only when the authorized batch
+  path opens the context. `get_category_provider` remains a separate FastAPI override seam and
+  returns a provider factory without constructing an SDK client.
+- The router performs owner/private/command checks before calling either the timezone loader
+  or batch factory. The webhook secret check also returns before the factory is opened.
+- Owner-timezone lookup and ingestion share the router's SQLAlchemy error boundary. A database
+  failure at either point sends exactly the generic temporary-error text without logging the
+  exception content. A missing owner row continues to raise the explicit server-configuration
+  error.
+- Summary rendering now evaluates complete-row candidates from 20 down to zero and chooses the
+  largest candidate within 4096 characters. `…и ещё N` is recomputed as total result rows minus
+  actually rendered rows; no fallback slices text or a row.
+
+### Review GREEN evidence
+
+Fresh verification after the review fixes and formatting:
+
+```text
+uv run pytest tests/unit/test_telegram_router.py tests/unit/test_logging.py -q
+53 passed in 2.44s
+
+uv run pytest tests/unit -q
+205 passed, 1 warning in 2.35s
+
+uv run pytest tests/integration/test_telegram_webhook.py --collect-only -q
+10 tests collected in 2.02s
+
+uv run ruff check src/moneyflow/telegram src/moneyflow/logging.py \
+  tests/unit/test_telegram_router.py tests/integration/test_telegram_webhook.py \
+  tests/unit/test_logging.py
+All checks passed!
+
+uv run ruff format --check <five focused Python files>
+5 files already formatted
+
+uv run mypy
+Success: no issues found in 28 source files
+
+uv lock --check
+Resolved 60 packages
+```
+
+The PostgreSQL integration suite remains execution-deferred because neither
+`ENVIRONMENT=test` nor `TEST_DATABASE_URL` is present. It was collection-checked only; no
+database, network, Telegram, OpenAI, or secret-bearing call was made.

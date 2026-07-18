@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 from io import StringIO
 import pytest
 from aiogram.types import Update
@@ -33,6 +34,21 @@ class FakeIngestionService:
     async def ingest(self, parse_result: object) -> BatchIngestionResult:
         rejected = getattr(parse_result, "rejected", ())
         return BatchIngestionResult(saved=(), duplicates=(), rejected=rejected)
+
+
+def timezone_loader(timezone: str):
+    async def load() -> str:
+        return timezone
+
+    return load
+
+
+def ingestion_factory(service: object):
+    @asynccontextmanager
+    async def open_service():
+        yield service
+
+    return open_service
 
 
 def make_update(*, user_id: int, text: str, update_id: int = 42) -> Update:
@@ -269,7 +285,7 @@ async def test_wrong_webhook_secret_logs_only_rejection_event(
             bot=FakeBot(),
             settings=Settings(telegram_webhook_secret="expected"),
             session=object(),  # type: ignore[arg-type]
-            ingestion_service=FakeIngestionService(),  # type: ignore[arg-type]
+            ingestion_service_factory=object(),  # type: ignore[arg-type]
             login_service=object(),  # type: ignore[arg-type]
             secret_token="wrong",
         )
@@ -297,8 +313,8 @@ async def test_telegram_router_logs_named_events_without_message_text(
         update,
         bot=FakeBot(),
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=FakeIngestionService(),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(FakeIngestionService()),  # type: ignore[arg-type]
         login_service=object(),  # type: ignore[arg-type]
     )
 

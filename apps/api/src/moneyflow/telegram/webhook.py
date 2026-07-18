@@ -1,6 +1,7 @@
 import logging
 import secrets
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Annotated, Any
 
 from aiogram import Bot
@@ -16,7 +17,6 @@ from moneyflow.categories.openai_provider import (
 )
 from moneyflow.categories.repository import CategoryCorrectionRepository
 from moneyflow.categories.resolver import CategoryResolver
-from moneyflow.categories.schemas import CategoryInput, CorrectionExample, ProviderDecision
 from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
 from moneyflow.models import UserSettings
@@ -28,28 +28,39 @@ from moneyflow.transactions.repository import TransactionRepository
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 logger = logging.getLogger(__name__)
 
+CategoryProviderFactory = Callable[[Settings], OpenAICategoryProvider | None]
 
-class _LazyCategoryProvider:
-    def __init__(self, settings: Settings) -> None:
-        self._settings = settings
-        self._provider: OpenAICategoryProvider | None = None
-        self._initialized = False
 
-    async def classify(
+class BatchIngestionServiceFactory:
+    """Build the request graph only after Telegram preflight checks pass."""
+
+    def __init__(self, provider_factory: CategoryProviderFactory) -> None:
+        self._provider_factory = provider_factory
+
+    @asynccontextmanager
+    async def open(
         self,
-        items: Sequence[CategoryInput],
-        examples: Mapping[str, Sequence[CorrectionExample]],
-    ) -> Mapping[str, ProviderDecision]:
-        if not self._initialized:
-            self._provider = build_category_provider(self._settings)
-            self._initialized = True
-        if self._provider is None:
-            return {}
-        return await self._provider.classify(items, examples)
-
-    async def aclose(self) -> None:
-        if self._provider is not None:
-            await self._provider.aclose()
+        session: AsyncSession,
+        settings: Settings,
+    ) -> AsyncIterator[BatchIngestionService]:
+        provider = self._provider_factory(settings)
+        try:
+            correction_repository = CategoryCorrectionRepository(session)
+            transaction_repository = TransactionRepository(session)
+            resolver = CategoryResolver(
+                owner=settings.authorized_telegram_user_id,
+                correction_repository=correction_repository,
+                provider=provider,
+            )
+            yield BatchIngestionService(
+                session,
+                settings.authorized_telegram_user_id,
+                resolver=resolver,
+                repository=transaction_repository,
+            )
+        finally:
+            if provider is not None:
+                await provider.aclose()
 
 
 async def get_bot(
@@ -62,37 +73,19 @@ async def get_bot(
         await bot.session.close()
 
 
-async def get_category_provider(
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> AsyncIterator[_LazyCategoryProvider]:
-    provider = _LazyCategoryProvider(settings)
-    try:
-        yield provider
-    finally:
-        await provider.aclose()
+async def get_category_provider() -> CategoryProviderFactory:
+    """External-provider override seam; returning the factory performs no construction."""
+
+    return build_category_provider
 
 
 async def get_batch_ingestion_service(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    provider: Annotated[
-        _LazyCategoryProvider,
+    provider_factory: Annotated[
+        CategoryProviderFactory,
         Depends(get_category_provider),
     ],
-) -> BatchIngestionService:
-    correction_repository = CategoryCorrectionRepository(session)
-    transaction_repository = TransactionRepository(session)
-    resolver = CategoryResolver(
-        owner=settings.authorized_telegram_user_id,
-        correction_repository=correction_repository,
-        provider=provider,
-    )
-    return BatchIngestionService(
-        session,
-        settings.authorized_telegram_user_id,
-        resolver=resolver,
-        repository=transaction_repository,
-    )
+) -> BatchIngestionServiceFactory:
+    return BatchIngestionServiceFactory(provider_factory)
 
 
 async def get_owner_timezone(
@@ -121,8 +114,8 @@ async def receive_webhook(
     bot: Annotated[BotClient, Depends(get_bot)],
     settings: Annotated[Settings, Depends(get_settings)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    ingestion_service: Annotated[
-        BatchIngestionService,
+    ingestion_service_factory: Annotated[
+        BatchIngestionServiceFactory,
         Depends(get_batch_ingestion_service),
     ],
     login_service: Annotated[LoginService, Depends(get_telegram_login_service)],
@@ -137,12 +130,18 @@ async def receive_webhook(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     update = Update.model_validate(payload)
-    owner_timezone = await get_owner_timezone(session, settings)
+
+    async def load_owner_timezone() -> str:
+        return await get_owner_timezone(session, settings)
+
+    def open_ingestion_service() -> AbstractAsyncContextManager[BatchIngestionService]:
+        return ingestion_service_factory.open(session, settings)
+
     await handle_text_update(
         update,
         bot=bot,
         settings=settings,
-        owner_timezone=owner_timezone,
-        ingestion_service=ingestion_service,
+        owner_timezone_loader=load_owner_timezone,
+        ingestion_service_factory=open_ingestion_service,
         login_service=login_service,
     )

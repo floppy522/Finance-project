@@ -1,17 +1,27 @@
+import logging
 from datetime import UTC, datetime
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 from aiogram.types import Update
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from moneyflow.config import Settings
-from moneyflow.categories.schemas import CategoryInput
+from moneyflow.config import Settings, get_settings
+from moneyflow.db import get_session
+from moneyflow.main import create_app
 from moneyflow.models import CategorySource, Transaction, TransactionDirection, TransactionType
-from moneyflow.telegram.batch_parser import BatchParseResult
+from moneyflow.telegram.batch_parser import BatchParseResult, RejectedInputLine
 from moneyflow.telegram.ingestion import BatchIngestionResult
-from moneyflow.telegram.router import handle_text_update
-from moneyflow.telegram.webhook import get_batch_ingestion_service, get_category_provider
+from moneyflow.telegram.router import _format_batch_summary, handle_text_update
+from moneyflow.telegram.webhook import (
+    get_batch_ingestion_service,
+    get_bot,
+    get_category_provider,
+    get_owner_timezone,
+    get_telegram_login_service,
+)
 
 
 MESSAGE_TIME = datetime(2026, 7, 18, 9, 30, tzinfo=UTC)
@@ -89,6 +99,27 @@ class RecordingLoginService:
         self.revoked_owners.append(telegram_user_id)
 
 
+class FailingScalarSession:
+    async def scalar(self, statement: object) -> object:
+        del statement
+        raise AssertionError("short-circuited update reached owner timezone lookup")
+
+
+def timezone_loader(timezone: str):
+    async def load() -> str:
+        return timezone
+
+    return load
+
+
+def ingestion_factory(service: object):
+    @asynccontextmanager
+    async def open_service():
+        yield service
+
+    return open_service
+
+
 def transaction(
     *,
     description: str,
@@ -148,8 +179,8 @@ async def test_updates_outside_owner_private_chat_short_circuit_before_commands_
         make_update(text, chat_id=chat_id, chat_type=chat_type, user_id=user_id),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=FailingIngestionService(),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(FailingIngestionService()),  # type: ignore[arg-type]
         login_service=login_service,  # type: ignore[arg-type]
     )
 
@@ -174,8 +205,8 @@ async def test_commands_short_circuit_before_batch_parser_and_ingestion(
         make_update(command),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1, public_web_url="https://money.test"),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=FailingIngestionService(),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(FailingIngestionService()),  # type: ignore[arg-type]
         login_service=login_service,  # type: ignore[arg-type]
     )
 
@@ -197,8 +228,8 @@ async def test_parser_receives_exact_telegram_message_timestamp_timezone_update_
         make_update("кофе 350\nтакси 780", update_id=77),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="America/New_York",
-        ingestion_service=ingestion,  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("America/New_York"),
+        ingestion_service_factory=ingestion_factory(ingestion),  # type: ignore[arg-type]
         login_service=RecordingLoginService(),  # type: ignore[arg-type]
     )
 
@@ -239,8 +270,10 @@ async def test_saved_summary_uses_russian_plural_forms(count: int, expected: str
         make_update("непонятно"),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=RecordingIngestionService(BatchIngestionResult(rows, (), ())),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(  # type: ignore[arg-type]
+            RecordingIngestionService(BatchIngestionResult(rows, (), ()))
+        ),
         login_service=RecordingLoginService(),  # type: ignore[arg-type]
     )
 
@@ -272,13 +305,15 @@ async def test_batch_summary_formats_dates_amount_signs_categories_rejections_an
         make_update("15 июля\nкофе 350\nзарплата +150000\nнепонятно"),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=RecordingIngestionService(  # type: ignore[arg-type]
-            BatchIngestionResult(
-                (saved,),
-                (duplicate,),
-                # Preserve the actual parser rejection so original line and number are exercised.
-                (),
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(  # type: ignore[arg-type]
+            RecordingIngestionService(
+                BatchIngestionResult(
+                    (saved,),
+                    (duplicate,),
+                    # Preserve the actual parser rejection so original line and number are exercised.
+                    (),
+                )
             )
         ),
         login_service=RecordingLoginService(),  # type: ignore[arg-type]
@@ -302,8 +337,8 @@ async def test_batch_summary_lists_actual_parser_rejection_with_original_line() 
         make_update("15 июля\nкофе 350\n  непонятно  "),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=ingestion,  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(ingestion),  # type: ignore[arg-type]
         login_service=RecordingLoginService(),  # type: ignore[arg-type]
     )
 
@@ -345,8 +380,10 @@ async def test_saved_summary_groups_non_contiguous_items_by_displayed_local_date
         make_update("кофе 350"),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=RecordingIngestionService(BatchIngestionResult(rows, (), ())),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(  # type: ignore[arg-type]
+            RecordingIngestionService(BatchIngestionResult(rows, (), ()))
+        ),
         login_service=RecordingLoginService(),  # type: ignore[arg-type]
     )
 
@@ -363,8 +400,8 @@ async def test_summary_includes_only_first_20_result_lines_and_accurate_remainin
         make_update("\n".join(input_lines)),
         bot=bot,
         settings=Settings(authorized_telegram_user_id=1),
-        owner_timezone="Europe/Moscow",
-        ingestion_service=RecordingIngestionService(),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(RecordingIngestionService()),  # type: ignore[arg-type]
         login_service=RecordingLoginService(),  # type: ignore[arg-type]
     )
 
@@ -386,8 +423,10 @@ async def test_database_exception_sends_exact_generic_message_without_leaking_ex
             make_update("Секрет 98765"),
             bot=bot,
             settings=Settings(authorized_telegram_user_id=1),
-            owner_timezone="Europe/Moscow",
-            ingestion_service=FailingDatabaseIngestionService(),  # type: ignore[arg-type]
+            owner_timezone_loader=timezone_loader("Europe/Moscow"),
+            ingestion_service_factory=ingestion_factory(  # type: ignore[arg-type]
+                FailingDatabaseIngestionService()
+            ),
             login_service=RecordingLoginService(),  # type: ignore[arg-type]
         )
 
@@ -400,6 +439,174 @@ async def test_database_exception_sends_exact_generic_message_without_leaking_ex
     rendered = " ".join(record.getMessage() for record in caplog.records)
     for private in ("98765", "Секрет", "login-secret", "session-secret"):
         assert private not in rendered
+
+
+@pytest.mark.parametrize(
+    ("text", "user_id", "chat_id", "chat_type", "secret", "expected_status"),
+    [
+        ("кофе 350", 1, 1, "private", "wrong", 401),
+        ("кофе 350", 2, 2, "private", "expected", 204),
+        ("кофе 350", 1, -100, "group", "expected", 204),
+        ("кофе 350", 1, 2, "private", "expected", 204),
+        ("/login", 1, 1, "private", "expected", 204),
+        ("/logout", 1, 1, "private", "expected", 204),
+        ("/revoke_sessions", 1, 1, "private", "expected", 204),
+    ],
+)
+async def test_secret_auth_private_and_commands_do_not_construct_batch_graph_or_load_timezone(
+    text: str,
+    user_id: int,
+    chat_id: int,
+    chat_type: str,
+    secret: str,
+    expected_status: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_graph(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("batch graph was constructed")
+
+    for target in (
+        "moneyflow.telegram.webhook.CategoryCorrectionRepository",
+        "moneyflow.telegram.webhook.TransactionRepository",
+        "moneyflow.telegram.webhook.CategoryResolver",
+        "moneyflow.telegram.webhook.BatchIngestionService",
+        "moneyflow.telegram.webhook.build_category_provider",
+    ):
+        monkeypatch.setattr(target, fail_graph)
+
+    bot = RecordingBot()
+    login_service = RecordingLoginService()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        telegram_webhook_secret="expected",
+        authorized_telegram_user_id=1,
+        public_web_url="https://money.test",
+    )
+    app.dependency_overrides[get_bot] = lambda: bot
+    app.dependency_overrides[get_session] = lambda: FailingScalarSession()
+    app.dependency_overrides[get_telegram_login_service] = lambda: login_service
+    payload = make_update(
+        text,
+        user_id=user_id,
+        chat_id=chat_id,
+        chat_type=chat_type,
+    ).model_dump(mode="json", by_alias=True)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": secret},
+            json=payload,
+        )
+
+    assert response.status_code == expected_status
+    if text == "/login":
+        assert bot.messages == [(1, "https://money.test/login?token=one-time-secret")]
+    elif text in {"/logout", "/revoke_sessions"}:
+        assert bot.messages == [(1, "Все веб-сессии завершены.")]
+    else:
+        assert bot.messages == []
+
+
+async def test_timezone_database_error_uses_exact_generic_batch_message_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingTimezoneSession:
+        async def scalar(self, statement: object) -> object:
+            del statement
+            raise SQLAlchemyError(
+                "amount=98765 description=Секрет token=login-secret session=session-secret"
+            )
+
+    bot = RecordingBot()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        telegram_webhook_secret="expected",
+        authorized_telegram_user_id=1,
+    )
+    app.dependency_overrides[get_bot] = lambda: bot
+    app.dependency_overrides[get_session] = lambda: FailingTimezoneSession()
+    app.dependency_overrides[get_telegram_login_service] = lambda: RecordingLoginService()
+    output: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            output.append(record.getMessage())
+
+    router_logger = logging.getLogger("moneyflow.telegram.router")
+    monkeypatch.setattr(router_logger, "handlers", [Capture()])
+    monkeypatch.setattr(router_logger, "propagate", False)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "expected"},
+            json=make_update("Секрет 98765").model_dump(mode="json", by_alias=True),
+        )
+
+    assert response.status_code == 204
+    assert bot.messages == [
+        (
+            1,
+            "Не удалось сохранить операции из-за временной ошибки. Попробуйте ещё раз позже.",
+        )
+    ]
+    rendered = " ".join(output)
+    for private in ("98765", "Секрет", "login-secret", "session-secret"):
+        assert private not in rendered
+
+
+async def test_owner_timezone_missing_row_still_fails_closed() -> None:
+    class MissingOwnerSession:
+        async def scalar(self, statement: object) -> None:
+            del statement
+            return None
+
+    with pytest.raises(RuntimeError, match="configured Telegram owner is missing"):
+        await get_owner_timezone(
+            MissingOwnerSession(),  # type: ignore[arg-type]
+            Settings(authorized_telegram_user_id=1),
+        )
+
+
+def test_summary_character_budget_omits_whole_rows_and_reports_actual_count() -> None:
+    rejections = tuple(
+        RejectedInputLine(index, f"строка-{index}-" + "я" * 220, "укажите сумму")
+        for index in range(1, 21)
+    )
+
+    summary = _format_batch_summary(BatchIngestionResult((), (), rejections), "Europe/Moscow")
+
+    rendered_rows = sum(line.startswith("строка ") for line in summary.splitlines())
+    assert 0 < rendered_rows < 20
+    assert summary.endswith(f"…и ещё {20 - rendered_rows}")
+    assert len(summary) <= 4096
+    for index in range(1, rendered_rows + 1):
+        assert f"строка {index}: строка-{index}-{'я' * 220} — укажите сумму" in summary
+    assert f"строка {rendered_rows + 1}:" not in summary
+
+
+def test_summary_omits_one_oversized_row_without_slicing_it() -> None:
+    oversized = "секрет-" + "я" * 5000
+    result = BatchIngestionResult(
+        (),
+        (),
+        (RejectedInputLine(1, oversized, "укажите сумму"),),
+    )
+
+    summary = _format_batch_summary(result, "Europe/Moscow")
+
+    assert len(summary) <= 4096
+    assert "строка 1:" not in summary
+    assert oversized[:100] not in summary
+    assert summary.endswith("…и ещё 1")
 
 
 async def test_factory_created_category_provider_is_closed_in_async_dependency_finally(
@@ -434,16 +641,15 @@ async def test_factory_created_category_provider_is_closed_in_async_dependency_f
         "moneyflow.telegram.webhook.build_category_provider",
         factory,
     )
-    dependency = get_category_provider(Settings(openai_api_key="not-a-real-secret"))
-
-    lazy_provider = await anext(dependency)
+    provider_factory = await get_category_provider()
     assert factory_calls == 0
 
-    await lazy_provider.classify(
-        (CategoryInput("1", "неизвестное", TransactionType.EXPENSE),),
-        {},
-    )
-    await dependency.aclose()
+    batch_factory = await get_batch_ingestion_service(provider_factory)
+    async with batch_factory.open(  # type: ignore[arg-type]
+        object(),
+        Settings(authorized_telegram_user_id=1, openai_api_key="not-a-real-secret"),
+    ):
+        assert factory_calls == 1
 
     assert factory_calls == 1
     assert provider.close_calls == 1
@@ -453,7 +659,15 @@ async def test_batch_ingestion_dependency_wires_owner_scoped_repositories_and_is
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = object()
-    provider = object()
+
+    class Provider:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+
+    provider = Provider()
     correction_repository = object()
     transaction_repository = object()
     captured: dict[str, object] = {}
@@ -485,13 +699,14 @@ async def test_batch_ingestion_dependency_wires_owner_scoped_repositories_and_is
     monkeypatch.setattr("moneyflow.telegram.webhook.CategoryResolver", resolver_factory)
     monkeypatch.setattr("moneyflow.telegram.webhook.BatchIngestionService", service_factory)
 
-    result = await get_batch_ingestion_service(
-        session,  # type: ignore[arg-type]
-        Settings(authorized_telegram_user_id=991),
-        provider,  # type: ignore[arg-type]
-    )
+    batch_factory = await get_batch_ingestion_service(lambda settings: provider)  # type: ignore[arg-type]
+    assert captured == {}
 
-    assert result == "service"
+    async with batch_factory.open(  # type: ignore[arg-type]
+        session,
+        Settings(authorized_telegram_user_id=991),
+    ) as result:
+        assert result == "service"
     assert captured == {
         "correction_session": session,
         "transaction_session": session,
@@ -506,3 +721,4 @@ async def test_batch_ingestion_dependency_wires_owner_scoped_repositories_and_is
             "repository": transaction_repository,
         },
     }
+    assert provider.close_calls == 1

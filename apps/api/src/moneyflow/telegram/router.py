@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Sequence
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, date
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -43,13 +44,21 @@ class BotClient(Protocol):
     async def send_message(self, chat_id: int, text: str) -> object: ...
 
 
+class OwnerTimezoneLoader(Protocol):
+    async def __call__(self) -> str: ...
+
+
+class IngestionServiceFactory(Protocol):
+    def __call__(self) -> AbstractAsyncContextManager[BatchIngestionService]: ...
+
+
 async def handle_text_update(
     update: Update,
     *,
     bot: BotClient,
     settings: Settings,
-    owner_timezone: str,
-    ingestion_service: BatchIngestionService,
+    owner_timezone_loader: OwnerTimezoneLoader,
+    ingestion_service_factory: IngestionServiceFactory,
     login_service: LoginService,
 ) -> None:
     message = update.message
@@ -90,14 +99,17 @@ async def handle_text_update(
         )
         return
 
-    parse_result = parse_batch_message(
-        text,
-        message.date,
-        owner_timezone,
-        update.update_id,
-    )
+    parse_result = None
     try:
-        result = await ingestion_service.ingest(parse_result)
+        owner_timezone = await owner_timezone_loader()
+        parse_result = parse_batch_message(
+            text,
+            message.date,
+            owner_timezone,
+            update.update_id,
+        )
+        async with ingestion_service_factory() as ingestion_service:
+            result = await ingestion_service.ingest(parse_result)
     except SQLAlchemyError:
         logger.error(
             "batch_persistence_failed",
@@ -106,8 +118,8 @@ async def handle_text_update(
                 "request_id": str(update.update_id),
                 "source": "telegram",
                 "outcome": "failed",
-                "item_count": len(parse_result.items),
-                "rejected_count": len(parse_result.rejected),
+                "item_count": len(parse_result.items) if parse_result is not None else 0,
+                "rejected_count": (len(parse_result.rejected) if parse_result is not None else 0),
             },
         )
         await bot.send_message(chat_id=message.chat.id, text=_DATABASE_ERROR_MESSAGE)
@@ -137,7 +149,19 @@ def _format_batch_summary(result: BatchIngestionResult, timezone: str) -> str:
     if total_results == 0:
         return "Не распознано ни одной операции."
 
-    remaining_slots = _MAX_RESULT_LINES
+    for rendered_count in range(min(total_results, _MAX_RESULT_LINES), -1, -1):
+        summary = _render_batch_summary(result, timezone, rendered_count)
+        if len(summary) <= _TELEGRAM_MESSAGE_LIMIT:
+            return summary
+    raise RuntimeError("summary headings exceed Telegram message limit")
+
+
+def _render_batch_summary(
+    result: BatchIngestionResult,
+    timezone: str,
+    rendered_count: int,
+) -> str:
+    remaining_slots = rendered_count
     sections: list[str] = []
     for title, transactions in (
         ("Сохранено", result.saved),
@@ -159,13 +183,12 @@ def _format_batch_summary(result: BatchIngestionResult, timezone: str) -> str:
     if result.rejected:
         sections.append(_format_rejection_section(result.rejected, selected_rejections))
 
-    displayed_results = min(total_results, _MAX_RESULT_LINES)
-    remaining = total_results - displayed_results
-    if remaining:
-        sections.append(f"…и ещё {remaining}")
+    total_results = len(result.saved) + len(result.duplicates) + len(result.rejected)
+    omitted_count = total_results - rendered_count
+    if omitted_count:
+        sections.append(f"…и ещё {omitted_count}")
 
-    summary = "\n\n".join(sections)
-    return _fit_telegram_limit(summary, remaining)
+    return "\n\n".join(sections)
 
 
 def _format_transaction_section(
@@ -224,11 +247,3 @@ def _pluralized(count: int, one: str, few: str, many: str) -> str:
 def _format_amount(amount_kopecks: int) -> str:
     rubles, kopecks = divmod(amount_kopecks, 100)
     return f"{rubles:,}".replace(",", " ") + f",{kopecks:02d}"
-
-
-def _fit_telegram_limit(summary: str, remaining: int) -> str:
-    if len(summary) <= _TELEGRAM_MESSAGE_LIMIT:
-        return summary
-    suffix = f"\n\n…и ещё {remaining}" if remaining else ""
-    available = _TELEGRAM_MESSAGE_LIMIT - len(suffix) - 1
-    return summary[:available].rstrip() + "…" + suffix
