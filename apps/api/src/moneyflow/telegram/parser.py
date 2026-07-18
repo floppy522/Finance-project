@@ -9,6 +9,8 @@ FORMAT_INSTRUCTION = "Формат: описание сумма. Наприме�
 def parse_simple_expense(
     text: str, now: datetime, source_event_id: str
 ) -> CreateTransactionCommand:
+    if sum(bool(line.strip()) for line in text.splitlines()) > 1:
+        raise ValueError(FORMAT_INSTRUCTION)
     result = parse_batch_message(text, now, "UTC", 0)
     if (
         len(result.items) != 1

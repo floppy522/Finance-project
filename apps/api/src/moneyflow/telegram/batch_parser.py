@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from zoneinfo import ZoneInfo
 
 from moneyflow.models import CategorySource, TransactionDirection, TransactionType
@@ -9,6 +9,7 @@ from moneyflow.transactions.schemas import CreateTransactionCommand
 
 
 _MAX_NON_EMPTY_LINES = 100
+_MAX_AMOUNT_KOPECKS = 2**63 - 1
 _MONTHS = {
     "января": 1,
     "февраля": 2,
@@ -33,7 +34,7 @@ _FINAL_AMOUNT = re.compile(
     r"^(?P<description>.+?)\s+(?P<amount>[+-]?(?:\d{1,3}(?: \d{3})+|\d+)(?:[.,]\d{1,2})?)$"
 )
 _INDEPENDENT_NUMBER = re.compile(r"(?<!\w)\d+(?!\w)")
-_INCOME_MARKERS = ("зарплат", "получил", "получила", "дивиденд", "возврат")
+_INCOME_MARKER_WORDS = frozenset({"зарплата", "получил", "получила", "дивиденды", "возврат"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,10 +198,14 @@ def _parse_operation(
 
     amount_text = match.group("amount")
     sign = amount_text[0] if amount_text[0] in "+-" else ""
-    amount = Decimal(amount_text.lstrip("+-").replace(" ", "").replace(",", "."))
-    amount_kopecks = int(amount * 100)
+    normalized_amount = amount_text.lstrip("+-").replace(" ", "").replace(",", ".")
+    with localcontext() as context:
+        context.prec = len(normalized_amount.replace(".", "")) + 2
+        amount_kopecks = int(Decimal(normalized_amount) * 100)
     if amount_kopecks <= 0:
         return None, "сумма должна быть больше нуля"
+    if amount_kopecks > _MAX_AMOUNT_KOPECKS:
+        return None, "сумма слишком большая"
 
     is_income = sign == "+" or (not sign and _has_income_marker(description))
     return (
@@ -218,5 +223,5 @@ def _parse_operation(
 
 
 def _has_income_marker(description: str) -> bool:
-    normalized = description.casefold()
-    return any(marker in normalized for marker in _INCOME_MARKERS)
+    words = re.findall(r"\b\w+\b", description.casefold())
+    return any(word in _INCOME_MARKER_WORDS for word in words)

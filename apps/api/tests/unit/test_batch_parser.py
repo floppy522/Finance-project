@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from moneyflow.models import TransactionDirection, TransactionType
+from moneyflow.models import CategorySource, TransactionDirection, TransactionType
 from moneyflow.telegram.batch_parser import parse_batch_message
 
 
@@ -77,11 +77,32 @@ def test_recognizes_word_based_income_markers(description: str) -> None:
     assert result.items[0].transaction_type is TransactionType.INCOME
 
 
+@pytest.mark.parametrize("description", ["невозвратный билет", "ничего не получилось"])
+def test_does_not_treat_income_marker_substrings_as_income(description: str) -> None:
+    result = parse_batch_message(f"{description} 100", FIXED, "Europe/Moscow", 7006)
+
+    assert result.items[0].transaction_type is TransactionType.EXPENSE
+
+
+def test_rejects_an_amount_that_exceeds_the_database_kopeck_limit() -> None:
+    result = parse_batch_message(f"кофе {'9' * 29}", FIXED, "UTC", 7006)
+
+    assert result.items == ()
+    assert result.rejected[0].reason == "сумма слишком большая"
+
+
 def test_rejects_the_entire_message_when_it_has_more_than_100_non_empty_lines() -> None:
     result = parse_batch_message("\n".join("кофе 1" for _ in range(101)), FIXED, "UTC", 7007)
 
     assert result.items == ()
     assert len(result.rejected) == 1
+
+
+def test_accepts_exactly_100_non_empty_lines() -> None:
+    result = parse_batch_message("\n".join("кофе 1" for _ in range(100)), FIXED, "UTC", 7007)
+
+    assert len(result.items) == 100
+    assert result.rejected == ()
 
 
 def test_ignores_blank_lines_and_star_bullets() -> None:
@@ -94,3 +115,38 @@ def test_uses_message_timestamp_when_an_operation_has_no_explicit_date() -> None
     result = parse_batch_message("кофе 350", FIXED, "Europe/Moscow", 7009)
 
     assert result.items[0].occurred_at == FIXED
+
+
+def test_inline_date_does_not_change_the_active_date_header() -> None:
+    result = parse_batch_message(
+        "15.07\nкофе 1\n16.07 такси 2\nобед 3",
+        FIXED,
+        "Europe/Moscow",
+        7010,
+    )
+
+    assert [item.occurred_at for item in result.items] == [
+        datetime(2026, 7, 15, 9, tzinfo=UTC),
+        datetime(2026, 7, 16, 9, tzinfo=UTC),
+        datetime(2026, 7, 15, 9, tzinfo=UTC),
+    ]
+
+
+def test_to_command_forwards_all_category_metadata() -> None:
+    item = parse_batch_message("кофе 350", FIXED, "UTC", 7011).items[0]
+
+    command = item.to_command(
+        source_event_id="telegram:override",
+        category_code="expense.cafes",
+        category_source=CategorySource.RULES,
+        category_confidence=95,
+        needs_category_review=False,
+    )
+
+    assert (
+        command.source_event_id,
+        command.category_code,
+        command.category_source,
+        command.category_confidence,
+        command.needs_category_review,
+    ) == ("telegram:override", "expense.cafes", CategorySource.RULES, 95, False)
