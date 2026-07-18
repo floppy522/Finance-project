@@ -16,9 +16,62 @@ body { margin: 0; }
 
 h1 { margin: 0 0 1.5rem; }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.transaction-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem 1rem;
+  align-items: end;
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid #d9deea;
+  border-radius: .75rem;
+  background: #fff;
+}
+
+.transaction-filters label {
+  display: grid;
+  gap: .375rem;
+  min-width: min(100%, 13rem);
+  color: #4b5568;
+  font-size: .875rem;
+  font-weight: 600;
+}
+
+.transaction-filters select,
+.category-badge {
+  min-height: 2.5rem;
+  border: 1px solid #aeb7c8;
+  border-radius: .5rem;
+  background: #fff;
+  color: #1d2433;
+  font: inherit;
+}
+
+.transaction-filters select { padding: .5rem 2rem .5rem .625rem; }
+
+.inline-error {
+  margin: 0 0 1rem;
+  padding: .75rem 1rem;
+  border-radius: .5rem;
+  background: #fff0f0;
+  color: #9b1c1c;
+}
+
 .table-scroll { overflow-x: auto; }
 
-table { width: 100%; border-collapse: collapse; min-width: 26rem; background: #fff; }
+table { width: 100%; border-collapse: collapse; min-width: 44rem; background: #fff; }
 
 caption { padding: .75rem; text-align: left; font-weight: 700; }
 
@@ -26,9 +79,44 @@ th, td { border-bottom: 1px solid #d9deea; padding: .75rem; text-align: left; }
 
 th:last-child, td:last-child { text-align: right; white-space: nowrap; }
 
+.category-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .375rem;
+  align-items: center;
+  min-width: 12rem;
+}
+
+.category-badge {
+  max-width: 15rem;
+  padding: .375rem 1.75rem .375rem .625rem;
+  background: #edf5ff;
+  border-color: #bdd6f7;
+  color: #124d91;
+}
+
+.category-badge:disabled { cursor: wait; opacity: .65; }
+
+.review-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.75rem;
+  padding: .25rem .5rem;
+  border-radius: 999px;
+  background: #fff2cc;
+  color: #6d4b00;
+  font-size: .75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.category-empty { color: #667085; }
+
 :focus-visible { outline: 3px solid #1468d4; outline-offset: 3px; }
 
 @media (max-width: 360px) {
   .app-shell { width: min(100% - 1rem, 56rem); padding-top: 1rem; }
+  .transaction-filters { padding: .75rem; }
+  .transaction-filters label { width: 100%; }
   th, td { padding: .625rem; }
 }
