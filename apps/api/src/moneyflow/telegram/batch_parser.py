@@ -34,7 +34,8 @@ _FINAL_AMOUNT = re.compile(
     r"^(?P<description>.+?)\s+(?P<amount>[+-]?(?:\d{1,3}(?: \d{3})+|\d+)(?:[.,]\d{1,2})?)$"
 )
 _INDEPENDENT_NUMBER = re.compile(r"(?<!\w)\d+(?!\w)")
-_INCOME_MARKER_WORDS = frozenset({"зарплата", "получил", "получила", "дивиденды", "возврат"})
+_INCOME_PREFIX_STEMS = ("зарплат", "дивиденд", "возврат")
+_INCOME_EXACT_WORDS = frozenset({"получил", "получила"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,4 +225,6 @@ def _parse_operation(
 
 def _has_income_marker(description: str) -> bool:
     words = re.findall(r"\b\w+\b", description.casefold())
-    return any(word in _INCOME_MARKER_WORDS for word in words)
+    return any(
+        word in _INCOME_EXACT_WORDS or word.startswith(_INCOME_PREFIX_STEMS) for word in words
+    )

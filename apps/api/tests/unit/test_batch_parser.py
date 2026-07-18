@@ -77,6 +77,16 @@ def test_recognizes_word_based_income_markers(description: str) -> None:
     assert result.items[0].transaction_type is TransactionType.INCOME
 
 
+@pytest.mark.parametrize(
+    "description",
+    ["зарплаты", "зарплату", "дивиденд", "дивиденда", "возвраты", "возврата"],
+)
+def test_recognizes_income_marker_prefixes_at_word_boundaries(description: str) -> None:
+    result = parse_batch_message(f"{description} 100", FIXED, "Europe/Moscow", 7006)
+
+    assert result.items[0].transaction_type is TransactionType.INCOME
+
+
 @pytest.mark.parametrize("description", ["невозвратный билет", "ничего не получилось"])
 def test_does_not_treat_income_marker_substrings_as_income(description: str) -> None:
     result = parse_batch_message(f"{description} 100", FIXED, "Europe/Moscow", 7006)
