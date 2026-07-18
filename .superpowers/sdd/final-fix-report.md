@@ -107,17 +107,48 @@ RED was part of the 53-failure focused run (`timeout_seconds` was absent).
 GREEN is covered by the 78-pass focused run; the hanging fake completes through
 fallback within the test's 0.2-second outer guard.
 
+## Final re-review: post-PATCH name safety and zero-choice history
+
+Follow-up implementation commit `71436ab` (`fix: preserve category names after
+updates`) addresses the final Important and Minor findings.
+
+- After a successful manual-category commit, `CategoryService` assigns the
+  already-loaded active `category.name_ru` to the returned transaction. This
+  replaces any expired/stale `column_property` value before the route performs
+  immediate Pydantic serialization and does not issue a lazy database load.
+- The assignment occurs only after a successful commit. The commit-failure
+  regression still rolls back, reraises, and retains the previous name.
+- A historical inactive web row with zero active compatible choices now shows
+  its server-derived Russian name as read-only text. It exposes no selector or
+  new inactive choice and no longer mislabels the row as `Без категории`.
+
+RED evidence:
+
+```text
+API category service: 1 failed, 11 passed
+  expected Кафе и рестораны; serialized category_name_ru was None
+Web focused:          1 failed, 15 skipped
+  Архивная категория absent; rendered Без категории
+```
+
+GREEN evidence:
+
+```text
+API service/category response focused: 27 passed
+Web TransactionList focused:           16 passed
+```
+
 ## Fresh final verification
 
 ```text
-API unit suite:             251 passed, 1 upstream Starlette warning
+API unit suite:             252 passed, 1 upstream Starlette warning
 API integration collect:   44 tests collected
 API Ruff:                   All checks passed
 API mypy:                   Success, 30 source files
 E2E support tests:          5 passed
 E2E support Ruff:           All checks passed
 E2E support mypy:           Success, 6 source files
-Web Vitest:                 16 passed in 2 files
+Web Vitest:                 17 passed in 2 files
 Web TypeScript lint:        exit 0
 Web production build:       79 modules transformed, exit 0
 E2E strict TypeScript:      exit 0
