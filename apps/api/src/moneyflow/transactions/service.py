@@ -33,6 +33,12 @@ class TransactionService:
         self._repository = repository or TransactionRepository(session)  # type: ignore[arg-type]
 
     async def create(self, command: CreateTransactionCommand) -> Transaction:
+        transaction = self.build(command)
+        stored = await self._repository.add(transaction)
+        await self._session.commit()
+        return stored
+
+    def build(self, command: CreateTransactionCommand) -> Transaction:
         if command.amount_kopecks <= 0:
             raise ValueError("amount_kopecks must be positive")
         description = command.description.strip()
@@ -53,17 +59,13 @@ class TransactionService:
             category_code = command.category_code or f"{command.transaction_type.value}.other"
             category_source = command.category_source or CategorySource.FALLBACK
             category_confidence = (
-                command.category_confidence
-                if command.category_confidence is not None
-                else 0
+                command.category_confidence if command.category_confidence is not None else 0
             )
             needs_review = (
-                command.needs_category_review
-                if command.needs_category_review is not None
-                else True
+                command.needs_category_review if command.needs_category_review is not None else True
             )
 
-        transaction = Transaction(
+        return Transaction(
             id=uuid4(),
             owner=self._telegram_user_id,
             type=command.transaction_type,
@@ -78,9 +80,6 @@ class TransactionService:
             category_confidence=category_confidence,
             needs_category_review=needs_review,
         )
-        stored = await self._repository.add(transaction)
-        await self._session.commit()
-        return stored
 
     async def list_recent(self, limit: int = 100) -> list[Transaction]:
         if not 1 <= limit <= 500:

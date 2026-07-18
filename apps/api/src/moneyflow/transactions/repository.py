@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,13 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from moneyflow.models import Transaction
 
 
+@dataclass(frozen=True, slots=True)
+class StoredTransaction:
+    transaction: Transaction
+    created: bool
+
+
 class TransactionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def find_by_source_event(
-        self, source: str, source_event_id: str
-    ) -> Transaction | None:
+    async def find_by_source_event(self, source: str, source_event_id: str) -> Transaction | None:
         rows = await self._session.scalars(
             select(Transaction).where(
                 Transaction.source == source,
@@ -21,11 +27,14 @@ class TransactionRepository:
         return rows.one_or_none()
 
     async def add(self, transaction: Transaction) -> Transaction:
+        return (await self.add_with_status(transaction)).transaction
+
+    async def add_with_status(self, transaction: Transaction) -> StoredTransaction:
         if transaction.source_event_id is None:
             self._session.add(transaction)
             await self._session.flush()
             await self._session.refresh(transaction)
-            return transaction
+            return StoredTransaction(transaction, created=True)
 
         statement = (
             insert(Transaction)
@@ -49,14 +58,12 @@ class TransactionRepository:
         )
         inserted = (await self._session.execute(statement)).scalar_one_or_none()
         if inserted is not None:
-            return inserted
+            return StoredTransaction(inserted, created=True)
 
-        winner = await self.find_by_source_event(
-            transaction.source, transaction.source_event_id
-        )
+        winner = await self.find_by_source_event(transaction.source, transaction.source_event_id)
         if winner is None:
             raise RuntimeError("idempotent transaction insert did not produce a winner")
-        return winner
+        return StoredTransaction(winner, created=False)
 
     async def list_recent(self, telegram_user_id: int, limit: int) -> list[Transaction]:
         rows = await self._session.scalars(

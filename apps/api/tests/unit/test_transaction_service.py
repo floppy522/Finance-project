@@ -41,9 +41,7 @@ def command(**changes: Any) -> CreateTransactionCommand:
 
 
 def service(session: FakeSession | None = None) -> TransactionService:
-    return TransactionService(
-        session or FakeSession(), 1, repository=FakeTransactionRepository()
-    )
+    return TransactionService(session or FakeSession(), 1, repository=FakeTransactionRepository())
 
 
 def test_create_transaction_command_matches_stable_contract() -> None:
@@ -104,11 +102,32 @@ async def test_description_must_not_be_blank() -> None:
 
 async def test_create_normalizes_naive_occurred_at_to_utc_and_commits_once() -> None:
     session = FakeSession()
-    created = await service(session).create(
-        command(occurred_at=datetime(2026, 7, 17, 12))
-    )
+    created = await service(session).create(command(occurred_at=datetime(2026, 7, 17, 12)))
     assert created.occurred_at == datetime(2026, 7, 17, 12, tzinfo=UTC)
     assert session.commits == 1
+
+
+def test_build_validates_and_constructs_without_persisting_or_committing() -> None:
+    session = FakeSession()
+    transaction = service(session).build(
+        command(
+            occurred_at=datetime(2026, 7, 17, 12),
+            description="  Кофе  ",
+            category_code="expense.cafes",
+            category_source=CategorySource.AI,
+            category_confidence=81,
+            needs_category_review=True,
+        )
+    )
+
+    assert transaction.owner == 1
+    assert transaction.occurred_at == datetime(2026, 7, 17, 12, tzinfo=UTC)
+    assert transaction.description == "Кофе"
+    assert transaction.category_code == "expense.cafes"
+    assert transaction.category_source is CategorySource.AI
+    assert transaction.category_confidence == 81
+    assert transaction.needs_category_review is True
+    assert session.commits == 0
 
 
 @pytest.mark.parametrize("limit", [0, 501])
