@@ -123,3 +123,68 @@ exit 0
   logging.
 - Scope: changes are limited to the Task 4 dependency/lockfile, two settings, the OpenAI
   adapter, its unit tests, config tests, and this report.
+
+## Review fixes — terminal status and SDK lifecycle
+
+Two Important review findings were handled in a separate RED/GREEN cycle.
+
+### Strict terminal status
+
+The response fake now requires tests to state its status explicitly. Two regressions provide
+an otherwise-valid parsed response with `status=None` and with no `status` attribute. Before
+the production fix, both were incorrectly accepted:
+
+```text
+FAILED test_non_completed_response_fails_closed[None]
+expected: {}
+actual:   {'2': ProviderDecision(category_code='expense.cafes', confidence=0.9)}
+
+FAILED test_response_without_status_fails_closed
+expected: {}
+actual:   {'2': ProviderDecision(category_code='expense.cafes', confidence=0.9)}
+```
+
+`_validated_decisions()` now accepts only the literal terminal status `"completed"`.
+Missing, `None`, incomplete, failed, in-progress, or any other status fails closed.
+
+### Explicit SDK ownership and close
+
+The factory regression uses an SDK fake with an async `close()` counter. Before the fix, the
+factory discarded the client after extracting `client.responses`, and the resulting provider
+had neither `_client` nor `aclose()`:
+
+```text
+FAILED test_provider_aclose_is_noop_for_injected_responses
+E AttributeError: 'OpenAICategoryProvider' object has no attribute 'aclose'
+
+FAILED test_configured_provider_owns_and_closes_sdk_client_once
+E AttributeError: 'OpenAICategoryProvider' object has no attribute '_client'
+```
+
+The provider now retains the factory-created `AsyncOpenAI` with an explicit
+`AsyncOpenAI | None` type and exposes an idempotent async `aclose()`. The concrete factory
+return type is `OpenAICategoryProvider | None`, so future request-scoped wiring can always
+close a configured provider in `finally`. Two `aclose()` calls close an owned SDK client
+exactly once; providers built with an injected fake Responses adapter have no owned client
+and closing them is a safe no-op. No garbage-collection behavior is relied upon.
+
+### Review-fix verification
+
+The first scoped review-fix run recorded exactly the four expected failures above and
+`26 passed`. Fresh GREEN and regression results after the fix:
+
+```text
+uv run pytest tests/unit/test_openai_category_provider.py tests/unit/test_config.py -v
+30 passed in 0.43s
+
+uv run pytest tests/unit -q
+157 passed, 1 warning in 2.16s
+
+uv run ruff check src tests/unit/test_openai_category_provider.py tests/unit/test_config.py
+All checks passed!
+
+uv run mypy
+Success: no issues found in 27 source files
+```
+
+The warning remains the pre-existing upstream Starlette test-client deprecation warning.

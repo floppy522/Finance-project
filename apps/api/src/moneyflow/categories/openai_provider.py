@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from moneyflow.categories.catalog import CATEGORY_CATALOG, category_matches_type
 from moneyflow.categories.schemas import (
     CategoryInput,
-    CategoryProvider,
     CorrectionExample,
     ProviderDecision,
 )
@@ -47,9 +46,17 @@ class _ResponsesAPI(Protocol):
 
 
 class OpenAICategoryProvider:
-    def __init__(self, *, responses: _ResponsesAPI, model: str) -> None:
+    def __init__(
+        self,
+        *,
+        responses: _ResponsesAPI,
+        model: str,
+        client: AsyncOpenAI | None = None,
+    ) -> None:
         self._responses = responses
         self._model = model
+        self._client = client
+        self._closed = False
 
     async def classify(
         self,
@@ -75,8 +82,14 @@ class OpenAICategoryProvider:
         except Exception:
             return {}
 
+    async def aclose(self) -> None:
+        if self._client is None or self._closed:
+            return
+        self._closed = True
+        await self._client.close()
 
-def build_category_provider(settings: Settings) -> CategoryProvider | None:
+
+def build_category_provider(settings: Settings) -> OpenAICategoryProvider | None:
     if settings.openai_api_key is None:
         return None
     api_key = settings.openai_api_key.get_secret_value()
@@ -86,6 +99,7 @@ def build_category_provider(settings: Settings) -> CategoryProvider | None:
     return OpenAICategoryProvider(
         responses=cast(_ResponsesAPI, client.responses),
         model=settings.openai_category_model,
+        client=client,
     )
 
 
@@ -140,8 +154,7 @@ def _request_payload(
 def _validated_decisions(
     response: object, items: Sequence[CategoryInput]
 ) -> dict[str, ProviderDecision]:
-    status = getattr(response, "status", None)
-    if status not in (None, "completed"):
+    if getattr(response, "status", None) != "completed":
         return {}
     if getattr(response, "incomplete_details", None) is not None or _has_refusal(response):
         return {}

@@ -36,7 +36,7 @@ def test_empty_openai_api_key_disables_provider_before_sdk_construction(
     assert build_category_provider(Settings(openai_api_key=api_key)) is None
 
 
-def test_configured_provider_constructs_sdk_with_safe_transport_settings(
+async def test_configured_provider_owns_and_closes_sdk_client_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -46,6 +46,10 @@ def test_configured_provider_constructs_sdk_with_safe_transport_settings(
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
             self.responses = responses
+            self.close_calls = 0
+
+        async def close(self) -> None:
+            self.close_calls += 1
 
     monkeypatch.setattr("moneyflow.categories.openai_provider.AsyncOpenAI", FakeAsyncOpenAI)
 
@@ -57,3 +61,10 @@ def test_configured_provider_constructs_sdk_with_safe_transport_settings(
     assert captured == {"api_key": "server-secret", "timeout": 5.0, "max_retries": 0}
     assert provider._responses is responses
     assert provider._model == "model-name"
+    assert provider._client is not None
+
+    client = provider._client
+    await provider.aclose()
+    await provider.aclose()
+
+    assert client.close_calls == 1

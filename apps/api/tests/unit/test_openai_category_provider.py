@@ -11,7 +11,7 @@ from moneyflow.models import TransactionType
 
 
 class RecordingResponses:
-    def __init__(self, parsed: object, *, status: str = "completed", output: object = ()) -> None:
+    def __init__(self, parsed: object, *, status: str | None, output: object = ()) -> None:
         self.parsed = parsed
         self.status = status
         self.output = output
@@ -33,6 +33,14 @@ class FailingResponses:
         raise RuntimeError("provider failed")
 
 
+class MissingStatusResponses:
+    def __init__(self, parsed: object) -> None:
+        self.parsed = parsed
+
+    async def parse(self, **kwargs: Any) -> object:
+        return SimpleNamespace(output_parsed=self.parsed, output=())
+
+
 def _item(
     item_id: str = "2",
     description: str = "кофе",
@@ -48,7 +56,8 @@ async def test_provider_uses_responses_structured_output_without_financial_metad
                 AIItem(item_id="2", category_code="expense.cafes", confidence=0.91),
                 AIItem(item_id="3", category_code="income.salary", confidence=0.88),
             ]
-        )
+        ),
+        status="completed",
     )
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
     items = [
@@ -140,7 +149,7 @@ async def test_provider_uses_responses_structured_output_without_financial_metad
     ),
 )
 async def test_malformed_or_incomplete_parsed_batch_fails_closed(parsed: object) -> None:
-    responses = RecordingResponses(parsed)
+    responses = RecordingResponses(parsed, status="completed")
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
     result = await provider.classify([_item()], {})
@@ -150,7 +159,8 @@ async def test_malformed_or_incomplete_parsed_batch_fails_closed(parsed: object)
 
 async def test_missing_one_of_multiple_ids_fails_closed_for_whole_batch() -> None:
     responses = RecordingResponses(
-        AIBatch(items=[AIItem(item_id="2", category_code="expense.cafes", confidence=0.9)])
+        AIBatch(items=[AIItem(item_id="2", category_code="expense.cafes", confidence=0.9)]),
+        status="completed",
     )
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
@@ -159,8 +169,8 @@ async def test_missing_one_of_multiple_ids_fails_closed_for_whole_batch() -> Non
     assert result == {}
 
 
-@pytest.mark.parametrize("status", ["incomplete", "failed", "in_progress"])
-async def test_non_completed_response_fails_closed(status: str) -> None:
+@pytest.mark.parametrize("status", [None, "incomplete", "failed", "in_progress"])
+async def test_non_completed_response_fails_closed(status: str | None) -> None:
     parsed = AIBatch(items=[AIItem(item_id="2", category_code="expense.cafes", confidence=0.9)])
     provider = OpenAICategoryProvider(
         responses=RecordingResponses(parsed, status=status), model="test-model"
@@ -169,11 +179,19 @@ async def test_non_completed_response_fails_closed(status: str) -> None:
     assert await provider.classify([_item()], {}) == {}
 
 
+async def test_response_without_status_fails_closed() -> None:
+    parsed = AIBatch(items=[AIItem(item_id="2", category_code="expense.cafes", confidence=0.9)])
+    provider = OpenAICategoryProvider(responses=MissingStatusResponses(parsed), model="test-model")
+
+    assert await provider.classify([_item()], {}) == {}
+
+
 async def test_refusal_fails_closed_even_if_parsed_output_is_present() -> None:
     parsed = AIBatch(items=[AIItem(item_id="2", category_code="expense.cafes", confidence=0.9)])
     refusal = [SimpleNamespace(content=[SimpleNamespace(type="refusal")])]
     provider = OpenAICategoryProvider(
-        responses=RecordingResponses(parsed, output=refusal), model="test-model"
+        responses=RecordingResponses(parsed, status="completed", output=refusal),
+        model="test-model",
     )
 
     assert await provider.classify([_item()], {}) == {}
@@ -186,7 +204,7 @@ async def test_provider_exception_fails_closed() -> None:
 
 
 async def test_duplicate_input_ids_fail_closed_without_calling_api() -> None:
-    responses = RecordingResponses(AIBatch(items=[]))
+    responses = RecordingResponses(AIBatch(items=[]), status="completed")
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
     assert await provider.classify([_item(), _item()], {}) == {}
@@ -194,11 +212,19 @@ async def test_duplicate_input_ids_fail_closed_without_calling_api() -> None:
 
 
 async def test_empty_input_returns_without_calling_api() -> None:
-    responses = RecordingResponses(AIBatch(items=[]))
+    responses = RecordingResponses(AIBatch(items=[]), status="completed")
     provider = OpenAICategoryProvider(responses=responses, model="test-model")
 
     assert await provider.classify([], {}) == {}
     assert responses.calls == 0
+
+
+async def test_provider_aclose_is_noop_for_injected_responses() -> None:
+    responses = RecordingResponses(AIBatch(items=[]), status="completed")
+    provider = OpenAICategoryProvider(responses=responses, model="test-model")
+
+    await provider.aclose()
+    await provider.aclose()
 
 
 @pytest.mark.parametrize(
