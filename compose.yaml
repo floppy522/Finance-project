@@ -1,4 +1,6 @@
 services:
+  # The development API runs on the host and reads optional provider settings
+  # from its environment; the database must never receive provider credentials.
   db:
     image: postgres:18-alpine
     environment:

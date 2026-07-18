@@ -9,7 +9,8 @@ const databaseUrl = process.env.TEST_DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("E2E requires an explicit TEST_DATABASE_URL ending in _e2e");
 }
-const e2eServerIdentity = `moneyflow-e2e-${process.pid}`;
+const e2eServerIdentity =
+  process.env.MONEYFLOW_E2E_SERVER_IDENTITY ?? `moneyflow-e2e-${process.pid}`;
 process.env.MONEYFLOW_E2E_SERVER_IDENTITY = e2eServerIdentity;
 const serverEnvironment = {
   AUTHORIZED_TELEGRAM_USER_ID: "1",

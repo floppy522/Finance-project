@@ -30,10 +30,13 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
     read -r -p "Authorized Telegram user ID: " AUTHORIZED_TELEGRAM_USER_ID
     read -r -s -p "Telegram bot token (input hidden): " TELEGRAM_BOT_TOKEN
     printf '\n'
+    read -r -s -p "OpenAI API key (optional, input hidden; press Enter to disable): " OPENAI_API_KEY
+    printf '\n'
 
     [[ "$MONEYFLOW_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]
     [[ "$AUTHORIZED_TELEGRAM_USER_ID" =~ ^[1-9][0-9]*$ ]]
     [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
+    [[ -z "${OPENAI_API_KEY:-}" || "$OPENAI_API_KEY" =~ ^[A-Za-z0-9._-]+$ ]]
 
     POSTGRES_PASSWORD="$(openssl rand -hex 32)"
     TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"
@@ -54,6 +57,10 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
         printf 'AUTHORIZED_TELEGRAM_USER_ID=%s\n' "$AUTHORIZED_TELEGRAM_USER_ID"
         printf 'PUBLIC_WEB_URL=https://%s\n' "$MONEYFLOW_DOMAIN"
         printf 'SESSION_COOKIE_SECURE=true\n'
+        if [[ -n "$OPENAI_API_KEY" ]]; then
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+        fi
+        printf 'OPENAI_CATEGORY_MODEL=gpt-5.6\n'
         printf 'BACKUP_DIR=/var/lib/moneyflow-backups\n'
         printf 'AGE_RECIPIENT=%s\n' "$AGE_RECIPIENT"
         printf 'AGE_IDENTITY_FILE=/root/.config/moneyflow/backup.agekey\n'
@@ -62,7 +69,7 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
     ln -- "$env_tmp" /opt/moneyflow/.env
     cleanup_env
     trap - EXIT HUP INT TERM
-    unset POSTGRES_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET AGE_RECIPIENT
+    unset POSTGRES_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET OPENAI_API_KEY AGE_RECIPIENT
 fi
 
 chown root:root /opt/moneyflow/.env
@@ -87,10 +94,12 @@ set +a
 [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
 [[ "$POSTGRES_PASSWORD" =~ ^[[:xdigit:]]{64}$ ]]
 [[ "$TELEGRAM_WEBHOOK_SECRET" =~ ^[[:xdigit:]]{64}$ ]]
+[[ -z "${OPENAI_API_KEY:-}" || "$OPENAI_API_KEY" =~ ^[A-Za-z0-9._-]+$ ]]
 [[ "$DATABASE_URL" == "postgresql+asyncpg://moneyflow:${POSTGRES_PASSWORD}@db:5432/moneyflow" ]]
 [[ "$PUBLIC_WEB_URL" == "https://${MONEYFLOW_DOMAIN}" ]]
 [[ "$AGE_RECIPIENT" == "$(age-keygen -y /root/.config/moneyflow/backup.agekey)" ]]
 unset POSTGRES_PASSWORD DATABASE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
+unset OPENAI_API_KEY
 ```
 
 The generated database password contains only hexadecimal characters, so it
@@ -98,6 +107,14 @@ is already safe in the URL user-information component and needs no ambiguous
 manual percent-encoding step. Copy the age identity file to encrypted offline
 storage, verify that copy, and never place it in the repository or application
 containers.
+
+OpenAI categorization is optional and separately billed by the provider. If you
+enable it, the key belongs only in the root-owned, mode `0600`
+`/opt/moneyflow/.env`; never put it in Compose files, shell arguments, logs, or
+the web, Caddy, or database environments. The application starts and falls
+back to deterministic rules and review categories without it. The default
+model is `gpt-5.6` and can be changed with `OPENAI_CATEGORY_MODEL` in that same
+root-only file.
 
 ## 2. Build and start
 
@@ -128,6 +145,21 @@ test "$(curl --silent --output /dev/null --write-out '%{http_code}' https://mone
 
 Replace `money.example.com` with `MONEYFLOW_DOMAIN` in literal verification
 commands.
+
+Send this post-deploy Telegram smoke input as the authorized owner in a private
+chat:
+
+```text
+сегодня
+кофе 350
+зарплата +1000
+```
+
+The bot response must report two saved operations. Open a fresh one-time
+`/login` link and verify that the web UI shows both operations with categories
+`Кафе и рестораны` and `Зарплата`. Repeat the input only when intentionally
+creating two more operations; replaying the same Telegram update must not add
+duplicates.
 
 ## 3. Register the Telegram webhook
 

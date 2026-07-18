@@ -60,5 +60,5 @@ docker exec -i "$container" pg_restore \
 
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -At \
     -U restore_check -d "$restore_db" \
-    -c "SELECT CASE WHEN to_regclass('public.alembic_version') IS NOT NULL AND to_regclass('public.user_settings') IS NOT NULL AND to_regclass('public.transactions') IS NOT NULL AND EXISTS (SELECT 1 FROM alembic_version) THEN 'ok' ELSE 'invalid' END" \
+    -c "SELECT CASE WHEN to_regclass('public.alembic_version') IS NOT NULL AND to_regclass('public.user_settings') IS NOT NULL AND to_regclass('public.transactions') IS NOT NULL AND to_regclass('public.categories') IS NOT NULL AND to_regclass('public.category_corrections') IS NOT NULL AND EXISTS (SELECT 1 FROM alembic_version) THEN 'ok' ELSE 'invalid' END" \
     | grep -Fxq ok

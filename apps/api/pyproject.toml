@@ -31,7 +31,9 @@ build-backend = "hatchling.build"
 packages = ["src/moneyflow"]
 
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
+pythonpath = ["tests"]
 testpaths = ["tests"]
 
 [tool.ruff]

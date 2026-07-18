@@ -88,6 +88,8 @@ def test_production_compose_minimizes_service_secrets_and_fails_closed() -> None
         "AUTHORIZED_TELEGRAM_USER_ID",
         "DATABASE_URL",
         "ENVIRONMENT",
+        "OPENAI_API_KEY",
+        "OPENAI_CATEGORY_MODEL",
         "PUBLIC_WEB_URL",
         "SESSION_COOKIE_SECURE",
         "TELEGRAM_BOT_TOKEN",
@@ -95,8 +97,77 @@ def test_production_compose_minimizes_service_secrets_and_fails_closed() -> None
     }
     assert services["api"]["environment"]["ENVIRONMENT"] == "production"
     assert services["api"]["environment"]["SESSION_COOKIE_SECURE"] == "true"
+    assert services["api"]["environment"]["OPENAI_API_KEY"] == "${OPENAI_API_KEY:-}"
+    assert (
+        services["api"]["environment"]["OPENAI_CATEGORY_MODEL"]
+        == "${OPENAI_CATEGORY_MODEL:-gpt-5.6}"
+    )
     assert set(services["caddy"]["environment"]) == {"MONEYFLOW_DOMAIN"}
     assert "environment" not in services["web"]
+
+    for service_name in ("db", "web", "caddy"):
+        rendered_service = repr(services[service_name])
+        assert "OPENAI_API_KEY" not in rendered_service
+        assert "OPENAI_CATEGORY_MODEL" not in rendered_service
+
+
+def test_example_environment_documents_only_an_empty_optional_openai_key() -> None:
+    example = read_repository_file(".env.example")
+
+    assert example.count("OPENAI_API_KEY=\n") == 1
+    assert example.count("OPENAI_CATEGORY_MODEL=gpt-5.6\n") == 1
+    assert not re.search(r"^OPENAI_API_KEY=.+$", example, re.MULTILINE)
+
+
+def test_e2e_app_overrides_the_provider_factory_without_network_access() -> None:
+    e2e_app = read_repository_file("tests/e2e/support/app.py")
+
+    assert "dependency_overrides[get_category_provider]" in e2e_app
+    assert "return no_external_category_provider" in e2e_app
+    assert "AsyncOpenAI" not in e2e_app
+
+
+def test_release_one_runbook_keeps_optional_ai_secret_root_only_and_documents_fallback() -> None:
+    runbook = read_repository_file("ops/deploy.md")
+    checklist = read_repository_file("ops/release-1-checklist.md")
+
+    assert "optional" in runbook.lower()
+    assert "separately billed" in runbook.lower()
+    assert "without it" in runbook.lower()
+    assert "/opt/moneyflow/.env" in runbook
+    assert "OPENAI_API_KEY=sk-" not in runbook
+    assert 'printf \'OPENAI_API_KEY=%s\\n\' "$OPENAI_API_KEY"' in runbook
+    assert '[[ -z "${OPENAI_API_KEY:-}" || "$OPENAI_API_KEY" =~ ^[A-Za-z0-9._-]+$ ]]' in runbook
+    assert "unset OPENAI_API_KEY" in runbook
+    assert "сегодня\nкофе 350\nзарплата +1000" in runbook
+    assert "Кафе и рестораны" in runbook
+    assert "Зарплата" in runbook
+
+    assert "categories" in checklist
+    assert "category_corrections" in checklist
+    assert "OPENAI_API_KEY" in checklist
+    assert "without an OpenAI key" in checklist
+
+
+def test_restore_check_preserves_isolation_and_validates_release_one_schema() -> None:
+    restore_check = read_repository_file("ops/restore-check.sh")
+
+    for required_table in (
+        "alembic_version",
+        "user_settings",
+        "transactions",
+        "categories",
+        "category_corrections",
+    ):
+        assert f"to_regclass('public.{required_table}') IS NOT NULL" in restore_check
+    assert "EXISTS (SELECT 1 FROM alembic_version)" in restore_check
+    assert 'readonly restore_db="moneyflow_restore_check"' in restore_check
+    assert '[[ "$restore_db" != "moneyflow" ]]' in restore_check
+    assert '[[ "$restore_db" != "${POSTGRES_DB:-moneyflow}" ]]' in restore_check
+    assert "--network none" in restore_check
+    assert "umask 077" in restore_check
+    assert 'chmod 600 "$dump_file"' in restore_check
+    assert "trap cleanup EXIT HUP INT TERM" in restore_check
 
 
 def test_postgres_18_mounts_version_aware_parent_directory() -> None:
