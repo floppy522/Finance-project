@@ -1,90 +1,131 @@
-# Task 6 report: authenticated web list
+# Task 6 report — Telegram batch flow and safe summary
 
 ## Result
 
-Implemented the React 19/Vite web client in `apps/web`, including cookie-authenticated API calls, the `/login?token=` callback, and the responsive semantic transaction table.
+Implemented only Task 6:
 
-## RED evidence
+- the authorized owner/private-chat and command checks remain ahead of batch parsing and
+  ingestion; the optional category provider is lazy, so its factory and API boundary are not
+  reached by rejected updates, commands, or locally resolved items;
+- Telegram's exact message timestamp, the owner's persisted timezone, update ID, and original
+  line numbers feed `parse_batch_message`;
+- one owner-scoped `BatchIngestionService` is wired from the request session, category
+  correction repository, transaction repository, resolver, and overrideable lazy provider;
+- a provider created by the factory is always closed by `await provider.aclose()` in the async
+  dependency's `finally` block;
+- summaries distinguish saved, previously saved (duplicate), and rejected rows, group saved
+  rows by local displayed date, use Russian plural forms, fixed catalog names, explicit income
+  and expense signs, and two decimal ruble amounts;
+- only the first 20 result rows are rendered, with an accurate `…и ещё N` count and a hard
+  4096-character Telegram limit;
+- database failures return the exact generic Russian message and never expose exception text;
+- batch logs contain only allowlisted update/status/count metadata, never descriptions,
+  amounts, Telegram text, tokens, or sessions;
+- owner timezone lookup fails closed when the configured owner row is absent.
 
-After creating `TransactionList.test.tsx` but before implementation, ran:
+No Task 7+ code was changed. No real OpenAI or Telegram request was made and no real secret
+was used.
 
-```sh
-./node_modules/.bin/vitest run
+## TDD evidence
+
+### Initial RED
+
+Tests were changed before production code. In the isolated uv environment, the scoped unit
+run failed during collection for the expected missing Task 6 dependency:
+
+```text
+UV_PROJECT_ENVIRONMENT=/tmp/moneyflow-task6-venv uv run pytest \
+  tests/unit/test_telegram_router.py tests/unit/test_logging.py -v
+
+collected 11 items / 1 error
+ImportError: cannot import name 'get_batch_ingestion_service'
 ```
 
-Result: failed as expected because `./TransactionList` could not be resolved from `TransactionList.test.tsx` (the production component did not exist).
+The integration test was also checked safely with collection only and failed for the expected
+missing timezone dependency:
 
-## GREEN evidence
+```text
+UV_PROJECT_ENVIRONMENT=/tmp/moneyflow-task6-venv uv run pytest \
+  tests/integration/test_telegram_webhook.py --collect-only -q
 
-After implementation, ran:
-
-```sh
-./node_modules/.bin/vitest run
-./node_modules/.bin/tsc --noEmit
-./node_modules/.bin/vite build
+1 collection error
+ImportError: cannot import name 'get_owner_timezone'
 ```
 
-Results:
+### Review RED/GREEN cycles
 
-- Vitest: 1 test file passed, 2 tests passed.
-- TypeScript strict check: passed.
-- Vite production build: passed; created `dist`.
+Two self-review gaps received separate regression tests before fixes:
 
-## Commands and verification notes
+1. provider construction was initially eager; the lifecycle regression failed with
+   `factory_calls == 1` before first classification, then passed after making the provider
+   lazy while retaining dependency-finally close;
+2. non-contiguous dates `A / B / A` initially rendered the `A` heading twice; the grouping
+   regression failed with `2 == 1`, then passed after stable grouping by displayed local date.
 
-`pnpm install` successfully generated and committed `apps/web/pnpm-lock.yaml`. Running `pnpm test --run` was blocked by the environment's package-manager supply-chain gate because it rejected esbuild's postinstall script (`ERR_PNPM_IGNORED_BUILDS`). The equivalent project-local Vitest, TypeScript, and Vite commands above all passed.
+### Final GREEN
 
-`git diff --cached --check` passed before commit.
+Fresh verification after formatting and the final self-review fix:
 
-## Commits
+```text
+UV_PROJECT_ENVIRONMENT=/tmp/moneyflow-task6-venv uv run pytest \
+  tests/unit/test_telegram_router.py tests/unit/test_logging.py -q
+42 passed in 2.12s
 
-- `1ffabb2 feat: add authenticated transaction list`
-- `ff02583 chore: omit TypeScript build metadata`
-- `cc807aa chore: ignore TypeScript build metadata`
-
-## Concerns
-
-No functional concerns.
-
-## Fix (review follow-up)
-
-Fixed the workspace build-script policy by setting `allowBuilds.esbuild: true` in
-`apps/web/pnpm-workspace.yaml`, so pnpm can execute esbuild's required postinstall.
-
-Added regression coverage and fixed the browser behavior:
-
-- `LoginCallback` keeps a module-scoped in-flight token-exchange promise. A
-  StrictMode effect replay attaches to that same promise after the first effect
-  removes the token from browser history, rather than issuing a second POST or
-  showing a false invalid-link error. Its active-effect guard still allows the
-  replayed effect to redirect on success or show the error on failure.
-- `TransactionList` now disables retry specifically for `UNAUTHORIZED`, while
-  retaining up to three retries for other errors. The production-default
-  QueryClient test asserts that a 401 makes exactly one request.
-
-### RED evidence
-
-After adding the regressions and before the implementation changes, ran:
-
-```sh
-CI=true HOME=/tmp XDG_CACHE_HOME=/tmp/.cache pnpm test --run src/auth/LoginCallback.test.tsx src/transactions/TransactionList.test.tsx
+UV_PROJECT_ENVIRONMENT=/tmp/moneyflow-task6-venv uv run pytest tests/unit -q
+194 passed, 1 warning in 2.26s
 ```
 
-Result: both tests failed as intended. The StrictMode callback test rendered
-the invalid-link alert because the replay saw the already-stripped URL token;
-the 401 test remained loading while React Query retried, rather than reaching
-the login guidance after one fetch.
+The one warning is the pre-existing Starlette `TestClient` deprecation warning.
 
-### Verification evidence
+Static and generated-dependency checks:
 
-```sh
-CI=true HOME=/tmp XDG_CACHE_HOME=/tmp/.cache pnpm install --frozen-lockfile
-CI=true HOME=/tmp XDG_CACHE_HOME=/tmp/.cache pnpm test --run
-CI=true HOME=/tmp XDG_CACHE_HOME=/tmp/.cache pnpm build
-CI=true HOME=/tmp XDG_CACHE_HOME=/tmp/.cache pnpm lint
+```text
+uv run ruff check src/moneyflow/telegram src/moneyflow/logging.py \
+  tests/unit/test_telegram_router.py tests/integration/test_telegram_webhook.py \
+  tests/unit/test_logging.py
+All checks passed!
+
+uv run ruff format --check <six changed Python files>
+6 files already formatted
+
+uv run mypy
+Success: no issues found in 28 source files
+
+uv lock --check
+Resolved 60 packages
 ```
 
-Results: frozen install passed and ran esbuild postinstall; Vitest passed (2
-files, 3 tests); production build passed; and `tsc --noEmit` passed. `HOME` and
-`XDG_CACHE_HOME` point pnpm at writable CI cache locations in this environment;
-they do not alter project configuration.
+## Deferred integration execution
+
+Neither `ENVIRONMENT=test` nor `TEST_DATABASE_URL` is present. Per the destructive-test
+safety gate, the PostgreSQL integration tests were not executed and no production/default
+database was accessed. Collection-only succeeds:
+
+```text
+UV_PROJECT_ENVIRONMENT=/tmp/moneyflow-task6-venv uv run pytest \
+  tests/integration/test_telegram_webhook.py --collect-only -q
+10 tests collected in 2.16s
+```
+
+The deferred coverage includes two-line webhook redelivery producing exactly two rows with
+`telegram:44:1` and `telegram:44:2`, authorization/private-chat fail-fast behavior, owner
+timezone fail-closed behavior, and existing login/logout flows.
+
+## Self-review
+
+- Authorization and commands: owner and private-chat checks precede parser and ingestion;
+  commands return before both. The provider factory is lazy and therefore also remains
+  untouched on these paths.
+- Time and identity: `message.date`, not server wall-clock time, is passed with the persisted
+  owner timezone and exact Telegram update/line IDs.
+- Dependency ownership: all repositories share the request session and owner ID; provider
+  construction is overrideable through FastAPI dependencies and factory-created SDK clients
+  close exactly once in dependency cleanup.
+- Summary safety: category display names come only from the fixed catalog, amounts retain
+  integer-kopeck precision, dates are grouped in owner local time, duplicates have a separate
+  section, and rejected output preserves original line text and local reason.
+- Failure/privacy: SQLAlchemy failures produce only the specified generic bot text. Log
+  records contain event/update/outcome/count fields and never carry exception strings or raw
+  financial/authentication values.
+- Scope: only Telegram routing/wiring, logging count allowlisting, Task 6 tests, and this
+  report changed.
