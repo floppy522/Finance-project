@@ -273,6 +273,19 @@ def test_ci_runs_all_release_gates_without_repository_secrets() -> None:
     assert "pull_request_target" not in workflow_text
     assert "${{ secrets." not in workflow_text
     assert set(workflow["jobs"]) == {"api", "web", "e2e", "release-static"}
+    assert workflow_text.count("actions/checkout@v6") == 4
+    assert workflow_text.count("actions/setup-node@v6") == 2
+    assert workflow_text.count("pnpm/action-setup@v6") == 2
+    assert (
+        workflow_text.count(
+            "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0"
+        )
+        == 3
+    )
+    assert "actions/checkout@v4" not in workflow_text
+    assert "actions/setup-node@v4" not in workflow_text
+    assert "pnpm/action-setup@v4" not in workflow_text
+    assert "astral-sh/setup-uv@v6" not in workflow_text
 
     api = workflow["jobs"]["api"]
     assert api["services"]["postgres"]["image"] == "postgres:18-alpine"
