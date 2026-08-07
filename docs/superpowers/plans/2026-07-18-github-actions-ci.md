@@ -242,7 +242,8 @@ jobs:
             echo "Prohibited secret or backup artifact found"
             exit 1
           fi
-          if git grep -I -E -q 'sk-[A-Za-z0-9_-]{16,}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|AGE-SECRET-KEY-' -- . ':(exclude).env.example'; then
+          age_secret_key_prefix='AGE-SECRET-KEY'
+          if git grep -I -E -q "sk-[A-Za-z0-9_-]{16,}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|${age_secret_key_prefix}-" -- . ':(exclude).env.example'; then
             echo "Prohibited secret pattern found"
             exit 1
           fi

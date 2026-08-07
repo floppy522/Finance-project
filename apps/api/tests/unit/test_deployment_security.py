@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -283,3 +284,48 @@ def test_ci_runs_all_release_gates_without_repository_secrets() -> None:
     assert e2e["env"]["TEST_DATABASE_URL"].endswith("/moneyflow_e2e")
     assert "playwright install --with-deps chromium" in workflow_text
     assert "docker compose -f compose.prod.yaml" in workflow_text
+
+
+def test_ci_secret_scanner_ignores_its_definitions_and_detects_prohibited_files(
+    tmp_path: Path,
+) -> None:
+    workflow_text = read_repository_file(".github/workflows/ci.yml")
+    workflow = yaml.load(workflow_text, Loader=yaml.BaseLoader)
+    scanner = workflow["jobs"]["release-static"]["steps"][-1]["run"]
+
+    def run_scanner(repository: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-o", "pipefail", "-c", scanner],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def initialize_repository(name: str) -> Path:
+        repository = tmp_path / name
+        workflow_path = repository / ".github/workflows/ci.yml"
+        workflow_path.parent.mkdir(parents=True)
+        workflow_path.write_text(workflow_text, encoding="utf-8")
+        subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+        subprocess.run(["git", "add", "."], cwd=repository, check=True)
+        return repository
+
+    assert run_scanner(REPOSITORY_ROOT).returncode == 0
+
+    clean_repository = initialize_repository("clean")
+    assert run_scanner(clean_repository).returncode == 0
+
+    signature_repository = initialize_repository("signature")
+    signature = "AGE-SECRET-KEY" + "-test-value"
+    (signature_repository / "secret.txt").write_text(signature, encoding="utf-8")
+    subprocess.run(["git", "add", "secret.txt"], cwd=signature_repository, check=True)
+    signature_result = run_scanner(signature_repository)
+    assert signature_result.returncode == 1
+    assert "Prohibited secret pattern found" in signature_result.stdout
+
+    artifact_repository = initialize_repository("artifact")
+    (artifact_repository / ".env").write_text("VALUE=1\n", encoding="utf-8")
+    artifact_result = run_scanner(artifact_repository)
+    assert artifact_result.returncode == 1
+    assert "Prohibited secret or backup artifact found" in artifact_result.stdout
