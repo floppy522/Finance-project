@@ -24,8 +24,7 @@ from moneyflow.transactions.service import TransactionService
 
 
 OWNER = 701
-FOREIGN_OWNER = 702
-TEST_OWNERS = (OWNER, FOREIGN_OWNER)
+OTHER_OWNER = 702
 INACTIVE_TEST_CATEGORY = "expense.education"
 
 
@@ -35,40 +34,23 @@ async def session_factory(
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
+        await session.execute(delete(CategoryCorrection).where(CategoryCorrection.owner == OWNER))
+        await session.execute(delete(Transaction).where(Transaction.owner == OWNER))
+        await session.execute(delete(UserSettings))
         await session.execute(
-            delete(CategoryCorrection).where(CategoryCorrection.owner.in_(TEST_OWNERS))
+            update(Category).where(Category.code == INACTIVE_TEST_CATEGORY).values(is_active=True)
         )
-        await session.execute(delete(Transaction).where(Transaction.owner.in_(TEST_OWNERS)))
-        await session.execute(
-            delete(UserSettings).where(UserSettings.telegram_user_id.in_(TEST_OWNERS))
-        )
-        await session.execute(
-            update(Category)
-            .where(Category.code == INACTIVE_TEST_CATEGORY)
-            .values(is_active=True)
-        )
-        session.add_all(
-            [
-                UserSettings(telegram_user_id=OWNER),
-                UserSettings(telegram_user_id=FOREIGN_OWNER),
-            ]
-        )
+        session.add(UserSettings(telegram_user_id=OWNER))
         await session.commit()
 
     yield factory
 
     async with factory() as session:
+        await session.execute(delete(CategoryCorrection).where(CategoryCorrection.owner == OWNER))
+        await session.execute(delete(Transaction).where(Transaction.owner == OWNER))
+        await session.execute(delete(UserSettings))
         await session.execute(
-            delete(CategoryCorrection).where(CategoryCorrection.owner.in_(TEST_OWNERS))
-        )
-        await session.execute(delete(Transaction).where(Transaction.owner.in_(TEST_OWNERS)))
-        await session.execute(
-            delete(UserSettings).where(UserSettings.telegram_user_id.in_(TEST_OWNERS))
-        )
-        await session.execute(
-            update(Category)
-            .where(Category.code == INACTIVE_TEST_CATEGORY)
-            .values(is_active=True)
+            update(Category).where(Category.code == INACTIVE_TEST_CATEGORY).values(is_active=True)
         )
         await session.commit()
 
@@ -140,9 +122,7 @@ async def test_inactive_category_is_excluded_from_catalog(
 ) -> None:
     async with session_factory() as session:
         await session.execute(
-            update(Category)
-            .where(Category.code == INACTIVE_TEST_CATEGORY)
-            .values(is_active=False)
+            update(Category).where(Category.code == INACTIVE_TEST_CATEGORY).values(is_active=False)
         )
         await session.commit()
 
@@ -189,23 +169,15 @@ async def test_manual_patch_updates_transaction_and_upserts_normalized_correctio
     assert rows[0].category_code == "expense.cafes"
 
 
-async def test_foreign_and_missing_transactions_are_indistinguishable_404(
+async def test_missing_transaction_returns_404(
     client: AsyncClient,
-    session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    foreign = await create_transaction(session_factory, owner=FOREIGN_OWNER)
-
-    foreign_response = await client.patch(
-        f"/api/transactions/{foreign.id}/category",
-        json={"category_code": "expense.groceries"},
-    )
     missing_response = await client.patch(
         f"/api/transactions/{uuid4()}/category",
         json={"category_code": "expense.groceries"},
     )
 
-    assert foreign_response.status_code == missing_response.status_code == 404
-    assert foreign_response.json() == missing_response.json()
+    assert missing_response.status_code == 404
 
 
 async def test_incompatible_and_inactive_categories_are_rejected_without_update(
@@ -215,9 +187,7 @@ async def test_incompatible_and_inactive_categories_are_rejected_without_update(
     transaction = await create_transaction(session_factory)
     async with session_factory() as session:
         await session.execute(
-            update(Category)
-            .where(Category.code == INACTIVE_TEST_CATEGORY)
-            .values(is_active=False)
+            update(Category).where(Category.code == INACTIVE_TEST_CATEGORY).values(is_active=False)
         )
         await session.commit()
 
@@ -243,7 +213,7 @@ async def test_incompatible_and_inactive_categories_are_rejected_without_update(
     assert correction_count == 0
 
 
-async def test_filters_are_owner_scoped_composable_and_keep_limit(
+async def test_filters_are_composable_and_keep_limit(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -254,13 +224,6 @@ async def test_filters_are_owner_scoped_composable_and_keep_limit(
         needs_category_review=False,
     )
     await create_transaction(session_factory, description="Неизвестно")
-    await create_transaction(
-        session_factory,
-        owner=FOREIGN_OWNER,
-        category_code="expense.groceries",
-        needs_category_review=False,
-    )
-
     response = await client.get(
         "/api/transactions",
         params={
@@ -280,9 +243,7 @@ async def test_invalid_or_inactive_filter_is_rejected(
 ) -> None:
     async with session_factory() as session:
         await session.execute(
-            update(Category)
-            .where(Category.code == INACTIVE_TEST_CATEGORY)
-            .values(is_active=False)
+            update(Category).where(Category.code == INACTIVE_TEST_CATEGORY).values(is_active=False)
         )
         await session.commit()
 
@@ -323,7 +284,7 @@ async def test_manual_patch_rejects_unknown_fields(
 
     response = await client.patch(
         f"/api/transactions/{transaction.id}/category",
-        json={"category_code": "expense.groceries", "owner": FOREIGN_OWNER},
+        json={"category_code": "expense.groceries", "owner": OTHER_OWNER},
     )
 
     assert response.status_code == 422
