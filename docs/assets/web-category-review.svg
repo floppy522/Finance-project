@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Moneyflow transaction category review</title>
+  <desc id="desc">A synthetic dashboard view showing the Moneyflow transaction table, category and review filters, and three categorized operations.</desc>
+  <defs>
+    <filter id="panel-shadow" x="-10%" y="-20%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#2b3850" flood-opacity=".08"/>
+    </filter>
+    <style>
+      .system { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { font-size: 32px; font-weight: 800; }
+      .label { font-size: 16px; font-weight: 700; }
+      .body { font-size: 18px; }
+      .small { font-size: 15px; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f6f7fb"/>
+  <rect x="92" y="62" width="1256" height="776" rx="20" fill="#fff" stroke="#d9deea" filter="url(#panel-shadow)"/>
+  <text x="144" y="133" class="system title" fill="#1d2433">Moneyflow</text>
+  <text x="144" y="164" class="system body" fill="#667085">Операции</text>
+
+  <rect x="144" y="211" width="372" height="106" rx="12" fill="#fff" stroke="#d9deea"/>
+  <text x="168" y="242" class="system label" fill="#4b5568">Категория</text>
+  <rect x="168" y="256" width="324" height="43" rx="8" fill="#fff" stroke="#aeb7c8"/>
+  <text x="186" y="284" class="system body" fill="#1d2433">Категория: Все категории</text>
+  <path d="m464 275 8 8 8-8" fill="none" stroke="#667085" stroke-width="2" stroke-linecap="round"/>
+
+  <rect x="536" y="211" width="300" height="106" rx="12" fill="#fff" stroke="#d9deea"/>
+  <text x="560" y="242" class="system label" fill="#4b5568">Проверка</text>
+  <rect x="560" y="256" width="252" height="43" rx="8" fill="#fff" stroke="#aeb7c8"/>
+  <text x="578" y="284" class="system body" fill="#1d2433">Проверка: Все</text>
+  <path d="m784 275 8 8 8-8" fill="none" stroke="#667085" stroke-width="2" stroke-linecap="round"/>
+
+  <rect x="144" y="354" width="1192" height="418" rx="12" fill="#fff" stroke="#d9deea"/>
+  <rect x="144" y="354" width="1192" height="67" rx="12" fill="#edf5ff"/>
+  <rect x="144" y="396" width="1192" height="25" fill="#edf5ff"/>
+  <text x="179" y="395" class="system label" fill="#124d91">Дата</text>
+  <text x="413" y="395" class="system label" fill="#124d91">Описание</text>
+  <text x="645" y="395" class="system label" fill="#124d91">Категория</text>
+  <text x="1295" y="395" class="system label" text-anchor="end" fill="#124d91">Сумма</text>
+
+  <line x1="144" y1="421" x2="1336" y2="421" stroke="#d9deea"/>
+  <text x="179" y="469" class="system body" fill="#1d2433">15 июл. 2026</text>
+  <text x="413" y="469" class="system body" fill="#1d2433">кофе</text>
+  <rect x="645" y="440" width="218" height="39" rx="8" fill="#edf5ff" stroke="#bdd6f7"/>
+  <text x="664" y="466" class="system body" fill="#124d91">Кафе и рестораны</text>
+  <text x="1295" y="469" class="system body" text-anchor="end" fill="#1d2433">350,00 ₽</text>
+
+  <line x1="144" y1="503" x2="1336" y2="503" stroke="#d9deea"/>
+  <text x="179" y="551" class="system body" fill="#1d2433">15 июл. 2026</text>
+  <text x="413" y="551" class="system body" fill="#1d2433">такси</text>
+  <rect x="645" y="522" width="146" height="39" rx="8" fill="#edf5ff" stroke="#bdd6f7"/>
+  <text x="664" y="548" class="system body" fill="#124d91">Транспорт</text>
+  <text x="1295" y="551" class="system body" text-anchor="end" fill="#1d2433">780,00 ₽</text>
+
+  <line x1="144" y1="585" x2="1336" y2="585" stroke="#d9deea"/>
+  <text x="179" y="633" class="system body" fill="#1d2433">16 июл. 2026</text>
+  <text x="413" y="633" class="system body" fill="#1d2433">зарплата</text>
+  <rect x="645" y="604" width="165" height="39" rx="8" fill="#edf5ff" stroke="#bdd6f7"/>
+  <text x="664" y="630" class="system body" fill="#124d91">Зарплата</text>
+  <rect x="824" y="604" width="138" height="39" rx="19.5" fill="#fff2cc"/>
+  <text x="893" y="630" class="system small" text-anchor="middle" font-weight="700" fill="#6d4b00">Проверьте</text>
+  <text x="1295" y="633" class="system body" text-anchor="end" fill="#1d2433">150 000,00 ₽</text>
+
+  <text x="144" y="808" class="system small" fill="#667085">Synthetic demo data · category controls mirror the implemented transaction list</text>
+</svg>
