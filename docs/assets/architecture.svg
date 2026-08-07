@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 700" role="img" aria-labelledby="title desc">
+  <title id="title">Moneyflow architecture and safeguards</title>
+  <desc id="desc">A system diagram connecting Telegram, FastAPI, batch parsing, category resolution, atomic ingestion, PostgreSQL, the FastAPI REST boundary, the React dashboard, and encrypted backup verification.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c1f2b"/>
+      <stop offset="1" stop-color="#102c2e"/>
+    </linearGradient>
+    <linearGradient id="service" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#193b42"/>
+      <stop offset="1" stop-color="#153138"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="m0 0 10 5-10 5Z" fill="#7dd3ad"/>
+    </marker>
+    <marker id="arrow-muted" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="m0 0 10 5-10 5Z" fill="#6f9d9e"/>
+    </marker>
+    <style>
+      .system { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .heading { font-size: 30px; font-weight: 800; }
+      .node-title { font-size: 18px; font-weight: 750; }
+      .node-subtitle { font-size: 14px; }
+      .guarantee { font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+      .flow { font-size: 14px; font-weight: 650; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="700" fill="url(#background)"/>
+  <circle cx="1270" cy="95" r="180" fill="#1e6654" fill-opacity=".16"/>
+  <circle cx="150" cy="650" r="210" fill="#183c61" fill-opacity=".18"/>
+  <text x="72" y="78" class="system heading" fill="#f4fff9">Moneyflow architecture</text>
+  <text x="72" y="110" class="system" font-size="16" fill="#a9c9c3">Small, explicit boundaries keep ingestion safe and recoverable.</text>
+
+  <g fill="url(#service)" stroke="#4a7c78" stroke-width="1.5">
+    <rect x="72" y="180" width="180" height="112" rx="14"/>
+    <rect x="286" y="180" width="190" height="112" rx="14"/>
+    <rect x="510" y="180" width="190" height="112" rx="14"/>
+    <rect x="734" y="180" width="210" height="112" rx="14"/>
+    <rect x="978" y="180" width="190" height="112" rx="14"/>
+    <rect x="1202" y="180" width="166" height="112" rx="14"/>
+    <rect x="72" y="450" width="224" height="100" rx="14"/>
+    <rect x="350" y="450" width="300" height="100" rx="14"/>
+    <rect x="1034" y="450" width="334" height="100" rx="14"/>
+  </g>
+
+  <g class="system" text-anchor="middle">
+    <text x="162" y="225" class="node-title" fill="#f4fff9">Telegram</text>
+    <text x="162" y="250" class="node-subtitle" fill="#b9d7ce">webhook update</text>
+    <rect x="110" y="261" width="104" height="22" rx="11" fill="#0d4d48" stroke="none"/>
+    <text x="162" y="277" class="guarantee" fill="#7dd3ad">single owner</text>
+
+    <text x="381" y="225" class="node-title" fill="#f4fff9">FastAPI webhook</text>
+    <text x="381" y="250" class="node-subtitle" fill="#b9d7ce">authenticated ingress</text>
+    <rect x="340" y="261" width="82" height="22" rx="11" fill="#0d4d48" stroke="none"/>
+    <text x="381" y="277" class="guarantee" fill="#7dd3ad">idempotent</text>
+
+    <text x="605" y="225" class="node-title" fill="#f4fff9">Batch parser</text>
+    <text x="605" y="250" class="node-subtitle" fill="#b9d7ce">dates · signs · amounts</text>
+
+    <text x="839" y="225" class="node-title" fill="#f4fff9">Category resolver</text>
+    <text x="839" y="250" class="node-subtitle" fill="#b9d7ce">catalog → guarded AI</text>
+    <rect x="790" y="261" width="98" height="22" rx="11" fill="#0d4d48" stroke="none"/>
+    <text x="839" y="277" class="guarantee" fill="#7dd3ad">strict timeout</text>
+
+    <text x="1073" y="225" class="node-title" fill="#f4fff9">Atomic ingestion</text>
+    <text x="1073" y="250" class="node-subtitle" fill="#b9d7ce">all accepted rows or none</text>
+    <rect x="1033" y="261" width="80" height="22" rx="11" fill="#0d4d48" stroke="none"/>
+    <text x="1073" y="277" class="guarantee" fill="#7dd3ad">all-or-nothing</text>
+
+    <text x="1285" y="225" class="node-title" fill="#f4fff9">PostgreSQL</text>
+    <text x="1285" y="250" class="node-subtitle" fill="#b9d7ce">owner-scoped data</text>
+    <rect x="1243" y="261" width="84" height="22" rx="11" fill="#0d4d48" stroke="none"/>
+    <text x="1285" y="277" class="guarantee" fill="#7dd3ad">durable</text>
+
+    <text x="184" y="490" class="node-title" fill="#f4fff9">React dashboard</text>
+    <text x="184" y="516" class="node-subtitle" fill="#b9d7ce">review categories</text>
+    <text x="184" y="539" class="flow" fill="#7dd3ad">REST API</text>
+
+    <text x="500" y="490" class="node-title" fill="#f4fff9">REST API + one-time login</text>
+    <text x="500" y="516" class="node-subtitle" fill="#b9d7ce">read and update boundary</text>
+    <text x="500" y="539" class="flow" fill="#7dd3ad">FastAPI</text>
+
+    <text x="1201" y="490" class="node-title" fill="#f4fff9">Encrypted backup</text>
+    <text x="1201" y="516" class="node-subtitle" fill="#b9d7ce">isolated restore verification</text>
+    <rect x="1134" y="527" width="134" height="22" rx="11" fill="#0d4d48" stroke="none"/>
+    <text x="1201" y="543" class="guarantee" fill="#7dd3ad">restore verified</text>
+  </g>
+
+  <g fill="none" stroke="#7dd3ad" stroke-width="2.5" marker-end="url(#arrow)">
+    <path d="M252 236h34"/>
+    <path d="M476 236h34"/>
+    <path d="M700 236h34"/>
+    <path d="M944 236h34"/>
+    <path d="M1168 236h34"/>
+    <path d="M1285 292v144"/>
+    <path d="M381 292v144"/>
+    <path d="M350 503h-54"/>
+  </g>
+  <g fill="none" stroke="#6f9d9e" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow-muted)">
+    <path d="M839 292v92h-134"/>
+  </g>
+
+  <g class="system flow" fill="#9fc5bb">
+    <text x="405" y="374">FastAPI REST boundary</text>
+    <text x="763" y="371">OpenAI guarded fallback</text>
+    <text x="1224" y="371">backup stream</text>
+  </g>
+  <text x="72" y="635" class="system" font-size="14" fill="#7caaa0">Arrows show the primary data path; dashed paths mark guarded or operational flows.</text>
+</svg>

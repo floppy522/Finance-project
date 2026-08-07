@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 900" role="img" aria-labelledby="title desc">
+  <title id="title">Moneyflow Telegram batch input</title>
+  <desc id="desc">A synthetic Telegram conversation showing two expenses and one salary being saved as three categorized operations.</desc>
+  <defs>
+    <linearGradient id="phone-shell" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#263348"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="telegram-header" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#229ed9"/>
+      <stop offset="1" stop-color="#197bb0"/>
+    </linearGradient>
+    <style>
+      .system { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { font-size: 15px; }
+      .body { font-size: 17px; }
+      .bold { font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect width="720" height="900" fill="#f6f7fb"/>
+  <circle cx="82" cy="88" r="42" fill="#e6effa"/>
+  <path d="M66 89 97 72c3-2 6 0 5 4l-8 37c-1 4-4 5-7 3l-10-8-6 6c-2 2-4 1-4-2l1-11-3-3c-2-2-1-6 1-7Z" fill="#1d87c5"/>
+  <text x="142" y="83" class="system" font-size="30" font-weight="800" fill="#1d2433">Moneyflow</text>
+  <text x="142" y="111" class="system" font-size="17" fill="#667085">Telegram capture · safe synthetic example</text>
+
+  <g>
+    <rect x="100" y="160" width="520" height="672" rx="44" fill="#14243b" fill-opacity=".16"/>
+    <rect x="100" y="146" width="520" height="672" rx="44" fill="url(#phone-shell)"/>
+    <rect x="117" y="163" width="486" height="638" rx="31" fill="#e9f4fc"/>
+    <rect x="284" y="174" width="152" height="22" rx="11" fill="#111827"/>
+
+    <rect x="117" y="207" width="486" height="76" rx="31" fill="url(#telegram-header)"/>
+    <rect x="117" y="251" width="486" height="32" fill="url(#telegram-header)"/>
+    <circle cx="157" cy="245" r="23" fill="#ffffff" fill-opacity=".93"/>
+    <path d="m149 246 16-9c2-1 3 0 2 3l-4 17c0 2-2 3-3 2l-6-4-4 4c-1 1-2 0-2-1l1-6-2-2c-1-1 0-3 2-4Z" fill="#1684bd"/>
+    <text x="194" y="239" class="system bold" font-size="18" fill="#fff">Moneyflow Bot</text>
+    <text x="194" y="262" class="system small" fill="#d9f1ff">online</text>
+    <text x="573" y="250" class="system" text-anchor="middle" font-size="26" fill="#fff">⋮</text>
+
+    <rect x="141" y="304" width="400" height="144" rx="17" fill="#fff"/>
+    <text x="164" y="333" class="system body bold" fill="#26333e">15 июля</text>
+    <text x="164" y="363" class="system body" fill="#26333e">- кофе 350</text>
+    <text x="164" y="393" class="system body" fill="#26333e">- такси 780</text>
+    <text x="164" y="423" class="system body" fill="#26333e">16.07 зарплата +150 000</text>
+    <text x="527" y="437" class="system small" text-anchor="end" fill="#526875">09:41 ✓✓</text>
+
+    <rect x="214" y="470" width="365" height="45" rx="15" fill="#d4f5d9"/>
+    <text x="233" y="498" class="system body bold" fill="#23653c">Сохранено: 3 операции</text>
+    <text x="552" y="498" class="system small" text-anchor="end" fill="#356b44">09:41</text>
+
+    <rect x="141" y="540" width="438" height="207" rx="18" fill="#fff"/>
+    <text x="164" y="571" class="system bold body" fill="#26333e">15 июля 2026</text>
+    <text x="164" y="599" class="system body" fill="#26333e">−350,00 ₽ · Кафе и рестораны · кофе</text>
+    <text x="164" y="627" class="system body" fill="#26333e">−780,00 ₽ · Транспорт · такси</text>
+    <line x1="164" y1="644" x2="556" y2="644" stroke="#d2d8df"/>
+    <text x="164" y="676" class="system bold body" fill="#26333e">16 июля 2026</text>
+    <text x="164" y="704" class="system body" fill="#26333e">+150 000,00 ₽ · Зарплата · зарплата</text>
+    <text x="557" y="733" class="system small" text-anchor="end" fill="#526875">09:41 ✓✓</text>
+  </g>
+
+  <rect x="480" y="63" width="200" height="31" rx="15.5" fill="#e8f2ff" stroke="#bdd6f7"/>
+  <text x="580" y="84" class="system small bold" text-anchor="middle" fill="#124d91">Synthetic demo data</text>
+</svg>
