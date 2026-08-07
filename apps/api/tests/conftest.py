@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Mapping
 import pytest_asyncio
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 
 
 def validated_test_database_url(environ: Mapping[str, str]) -> str:
@@ -26,6 +27,10 @@ def validated_test_database_url(environ: Mapping[str, str]) -> str:
 @pytest_asyncio.fixture(scope="session")
 async def engine() -> AsyncIterator[AsyncEngine]:
     database_url = validated_test_database_url(os.environ)
-    test_engine = create_async_engine(database_url, hide_parameters=True)
+    test_engine = create_async_engine(
+        database_url,
+        hide_parameters=True,
+        poolclass=NullPool,
+    )
     yield test_engine
     await test_engine.dispose()

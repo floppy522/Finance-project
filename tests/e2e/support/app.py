@@ -3,8 +3,9 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import Request, Response
 
+from moneyflow.config import Settings
 from moneyflow.main import create_app
-from moneyflow.telegram.webhook import get_bot
+from moneyflow.telegram.webhook import CategoryProviderFactory, get_bot, get_category_provider
 
 
 class FakeBot:
@@ -16,8 +17,18 @@ async def get_fake_bot() -> FakeBot:
     return FakeBot()
 
 
+def no_external_category_provider(settings: Settings) -> None:
+    del settings
+    return None
+
+
+async def get_no_external_category_provider() -> CategoryProviderFactory:
+    return no_external_category_provider
+
+
 app = create_app()
 app.dependency_overrides[get_bot] = get_fake_bot
+app.dependency_overrides[get_category_provider] = get_no_external_category_provider
 
 configured_server_identity = os.environ.get("MONEYFLOW_E2E_SERVER_IDENTITY")
 if os.environ.get("ENVIRONMENT") != "test" or not configured_server_identity:

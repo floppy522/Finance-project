@@ -12,7 +12,7 @@ from moneyflow.config import Settings, get_settings
 from moneyflow.db import get_session
 from moneyflow.main import create_app
 from moneyflow.models import LoginToken, Transaction, UserSettings, WebSession
-from moneyflow.telegram.webhook import get_bot
+from moneyflow.telegram.webhook import get_bot, get_owner_timezone
 
 
 WEBHOOK_SECRET = "test-webhook-secret"
@@ -126,9 +126,24 @@ def transaction_count(
     return count
 
 
-async def post_valid_webhook(
-    client: AsyncClient, update: dict[str, Any]
-):
+@pytest.fixture
+def transaction_source_ids(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Callable[[], Any]:
+    async def load() -> list[str | None]:
+        async with session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(Transaction.source_event_id).order_by(Transaction.source_event_id)
+                    )
+                ).all()
+            )
+
+    return load
+
+
+async def post_valid_webhook(client: AsyncClient, update: dict[str, Any]):
     return await client.post(
         "/telegram/webhook",
         headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
@@ -159,9 +174,7 @@ async def test_foreign_user_creates_no_transaction(
         del args, kwargs
         pytest.fail("foreign update reached the parser")
 
-    monkeypatch.setattr(
-        "moneyflow.telegram.router.parse_simple_expense", fail_if_parser_is_invoked
-    )
+    monkeypatch.setattr("moneyflow.telegram.router.parse_batch_message", fail_if_parser_is_invoked)
     response = await post_valid_webhook(
         client,
         foreign_update(update_id=11, text="private text 350"),
@@ -194,9 +207,7 @@ async def test_authorized_user_outside_own_private_chat_is_silently_rejected_bef
         del args, kwargs
         pytest.fail("non-private update reached the parser")
 
-    monkeypatch.setattr(
-        "moneyflow.telegram.router.parse_simple_expense", fail_if_parser_is_invoked
-    )
+    monkeypatch.setattr("moneyflow.telegram.router.parse_batch_message", fail_if_parser_is_invoked)
 
     response = await post_valid_webhook(
         client,
@@ -213,16 +224,32 @@ async def test_authorized_user_outside_own_private_chat_is_silently_rejected_bef
     assert fake_bot.messages == []
 
 
-async def test_repeated_update_creates_one_transaction(
+async def test_repeated_two_line_update_creates_exactly_two_transactions_with_original_line_ids(
     client: AsyncClient,
     authorized_update: Callable[..., dict[str, Any]],
     transaction_count: Callable[[], Any],
+    transaction_source_ids: Callable[[], Any],
 ) -> None:
-    update = authorized_update(update_id=12, text="кофе 350")
+    update = authorized_update(update_id=44, text="кофе 350\nтакси 780")
 
     assert (await post_valid_webhook(client, update)).status_code == 204
     assert (await post_valid_webhook(client, update)).status_code == 204
-    assert await transaction_count() == 1
+    assert await transaction_count() == 2
+    assert await transaction_source_ids() == ["telegram:44:1", "telegram:44:2"]
+
+
+async def test_owner_timezone_lookup_fails_closed_when_configured_owner_row_is_missing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        await session.execute(delete(UserSettings).where(UserSettings.telegram_user_id == 1))
+        await session.commit()
+
+        with pytest.raises(RuntimeError, match="configured Telegram owner is missing"):
+            await get_owner_timezone(
+                session,
+                Settings(authorized_telegram_user_id=1),
+            )
 
 
 async def test_login_command_returns_one_time_web_link(

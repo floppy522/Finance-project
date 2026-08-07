@@ -30,10 +30,13 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
     read -r -p "Authorized Telegram user ID: " AUTHORIZED_TELEGRAM_USER_ID
     read -r -s -p "Telegram bot token (input hidden): " TELEGRAM_BOT_TOKEN
     printf '\n'
+    read -r -s -p "OpenAI API key (optional, input hidden; press Enter to disable): " OPENAI_API_KEY
+    printf '\n'
 
     [[ "$MONEYFLOW_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]
     [[ "$AUTHORIZED_TELEGRAM_USER_ID" =~ ^[1-9][0-9]*$ ]]
     [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
+    [[ -z "${OPENAI_API_KEY:-}" || "$OPENAI_API_KEY" =~ ^[A-Za-z0-9._-]+$ ]]
 
     POSTGRES_PASSWORD="$(openssl rand -hex 32)"
     TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"
@@ -54,6 +57,10 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
         printf 'AUTHORIZED_TELEGRAM_USER_ID=%s\n' "$AUTHORIZED_TELEGRAM_USER_ID"
         printf 'PUBLIC_WEB_URL=https://%s\n' "$MONEYFLOW_DOMAIN"
         printf 'SESSION_COOKIE_SECURE=true\n'
+        if [[ -n "$OPENAI_API_KEY" ]]; then
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+        fi
+        printf 'OPENAI_CATEGORY_MODEL=gpt-5.6\n'
         printf 'BACKUP_DIR=/var/lib/moneyflow-backups\n'
         printf 'AGE_RECIPIENT=%s\n' "$AGE_RECIPIENT"
         printf 'AGE_IDENTITY_FILE=/root/.config/moneyflow/backup.agekey\n'
@@ -62,7 +69,7 @@ if [[ ! -e /opt/moneyflow/.env ]]; then
     ln -- "$env_tmp" /opt/moneyflow/.env
     cleanup_env
     trap - EXIT HUP INT TERM
-    unset POSTGRES_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET AGE_RECIPIENT
+    unset POSTGRES_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET OPENAI_API_KEY AGE_RECIPIENT
 fi
 
 chown root:root /opt/moneyflow/.env
@@ -87,10 +94,12 @@ set +a
 [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
 [[ "$POSTGRES_PASSWORD" =~ ^[[:xdigit:]]{64}$ ]]
 [[ "$TELEGRAM_WEBHOOK_SECRET" =~ ^[[:xdigit:]]{64}$ ]]
+[[ -z "${OPENAI_API_KEY:-}" || "$OPENAI_API_KEY" =~ ^[A-Za-z0-9._-]+$ ]]
 [[ "$DATABASE_URL" == "postgresql+asyncpg://moneyflow:${POSTGRES_PASSWORD}@db:5432/moneyflow" ]]
 [[ "$PUBLIC_WEB_URL" == "https://${MONEYFLOW_DOMAIN}" ]]
 [[ "$AGE_RECIPIENT" == "$(age-keygen -y /root/.config/moneyflow/backup.agekey)" ]]
 unset POSTGRES_PASSWORD DATABASE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
+unset OPENAI_API_KEY
 ```
 
 The generated database password contains only hexadecimal characters, so it
@@ -99,7 +108,15 @@ manual percent-encoding step. Copy the age identity file to encrypted offline
 storage, verify that copy, and never place it in the repository or application
 containers.
 
-## 2. Build and start
+OpenAI categorization is optional and separately billed by the provider. If you
+enable it, the key belongs only in the root-owned, mode `0600`
+`/opt/moneyflow/.env`; never put it in Compose files, shell arguments, logs, or
+the web, Caddy, or database environments. The application starts and falls
+back to deterministic rules and review categories without it. The default
+model is `gpt-5.6` and can be changed with `OPENAI_CATEGORY_MODEL` in that same
+root-only file.
+
+## 2. Back up, migrate, build, and start
 
 Record the currently deployed revision before changing it, then check out the
 reviewed release revision:
@@ -110,13 +127,41 @@ git fetch --tags --prune
 git checkout --detach RELEASE_COMMIT_SHA
 docker compose -f compose.prod.yaml --env-file .env config --quiet
 docker compose -f compose.prod.yaml --env-file .env build --pull
-docker compose -f compose.prod.yaml --env-file .env up -d
+```
+
+Before any `up` command or migration, create a fresh encrypted backup of the
+currently deployed release-0 database and prove that it restores as the legacy
+schema. Stop if either command fails. Record the exact verified backup filename
+in the change record; this is the only backup eligible for an approved
+pre-migration restore.
+
+```sh
+/opt/moneyflow/ops/backup.sh
+/opt/moneyflow/ops/restore-check.sh legacy
+```
+
+Apply the migration explicitly while the old database service is still
+running. Do not run multiple API replicas during migrations.
+
+```sh
+docker compose -f compose.prod.yaml --env-file .env run --rm --no-deps api alembic upgrade head
+```
+
+Create a second fresh encrypted backup and prove that the migrated database
+restores as release 1. Stop if either check fails. Only after both sides of the
+migration have verified backups may the release services start.
+
+```sh
+/opt/moneyflow/ops/backup.sh
+/opt/moneyflow/ops/restore-check.sh release1
+docker compose -f compose.prod.yaml --env-file .env up -d --remove-orphans
 docker compose -f compose.prod.yaml --env-file .env ps
 ```
 
-The API entry command waits for the database health check, runs `alembic
-upgrade head`, bootstraps the configured owner, and then starts Uvicorn. Do not
-run multiple API replicas during migrations.
+The API entry command still runs `alembic upgrade head` idempotently before it
+bootstraps the configured owner and starts Uvicorn. The explicit migration and
+release-1 restore check above must already have succeeded before this automatic
+startup migration is allowed to run.
 
 Verify locally and externally:
 
@@ -128,6 +173,21 @@ test "$(curl --silent --output /dev/null --write-out '%{http_code}' https://mone
 
 Replace `money.example.com` with `MONEYFLOW_DOMAIN` in literal verification
 commands.
+
+Send this post-deploy Telegram smoke input as the authorized owner in a private
+chat:
+
+```text
+сегодня
+кофе 350
+зарплата +1000
+```
+
+The bot response must report two saved operations. Open a fresh one-time
+`/login` link and verify that the web UI shows both operations with categories
+`Кафе и рестораны` and `Зарплата`. Repeat the input only when intentionally
+creating two more operations; replaying the same Telegram update must not add
+duplicates.
 
 ## 3. Register the Telegram webhook
 
@@ -202,7 +262,7 @@ database name, validates the required schema, and removes both in its trap.
 set -a
 . /opt/moneyflow/.env
 set +a
-/opt/moneyflow/ops/restore-check.sh
+/opt/moneyflow/ops/restore-check.sh release1
 unset AGE_IDENTITY_FILE POSTGRES_PASSWORD DATABASE_URL
 ```
 
@@ -211,25 +271,16 @@ monthly. A backup is not considered usable until this check succeeds.
 
 ## Rollback
 
-Rollback code only to the revision recorded immediately before deployment.
-Release migrations must remain backward compatible; never run an unreviewed
-Alembic downgrade and never point `restore-check.sh` at production.
+Once migration `a841bc64e210` / release migration 0002 has been applied, the
+release-0 code is schema-incompatible. Operators must not check out or start the previous code
+against that database. A health response alone does not validate
+schema compatibility or financial-data correctness and is not a rollback gate.
 
-```sh
-cd /opt/moneyflow
-test -s /var/lib/moneyflow-backups/previous-code-revision
-PREVIOUS_REVISION="$(cat /var/lib/moneyflow-backups/previous-code-revision)"
-git cat-file -e "${PREVIOUS_REVISION}^{commit}"
-git checkout --detach "$PREVIOUS_REVISION"
-docker compose -f compose.prod.yaml --env-file .env build
-docker compose -f compose.prod.yaml --env-file .env up -d --remove-orphans
-docker compose -f compose.prod.yaml --env-file .env ps
-curl --fail --silent --show-error https://money.example.com/health \
-    | grep -Fxq '{"status":"ok"}'
-unset PREVIOUS_REVISION
-```
-
-If the failed release introduced an incompatible database change, stop here,
-keep the service unavailable, preserve the encrypted backups, and use a
-separately reviewed production recovery procedure. The restore-check script is
-intentionally incapable of restoring a production target.
+Prefer a forward fix using release-1-compatible code. If a forward fix is not
+viable, keep the service unavailable and escalate to an explicitly reviewed and
+approved production recovery procedure. That procedure may restore only the
+exact pre-migration encrypted backup already verified with
+`ops/restore-check.sh legacy`, and approval must explicitly acknowledge the
+loss of all writes after that backup. This runbook deliberately does not provide
+destructive production restore commands. Never point `restore-check.sh` at
+production and never run an unreviewed Alembic downgrade.

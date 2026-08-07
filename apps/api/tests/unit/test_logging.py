@@ -1,8 +1,7 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 from io import StringIO
-from types import SimpleNamespace
-
 import pytest
 from aiogram.types import Update
 from fastapi import HTTPException
@@ -13,6 +12,7 @@ from moneyflow.db import engine
 from moneyflow.logging import JsonFormatter, configure_logging
 from moneyflow.main import create_app
 from moneyflow.telegram.router import handle_text_update
+from moneyflow.telegram.ingestion import BatchIngestionResult
 from moneyflow.telegram.webhook import get_bot, receive_webhook
 
 
@@ -30,10 +30,25 @@ class FakeBot:
         del chat_id, text
 
 
-class FakeTransactionService:
-    async def create(self, command: object) -> SimpleNamespace:
-        del command
-        return SimpleNamespace(amount_kopecks=35000, description="Coffee")
+class FakeIngestionService:
+    async def ingest(self, parse_result: object) -> BatchIngestionResult:
+        rejected = getattr(parse_result, "rejected", ())
+        return BatchIngestionResult(saved=(), duplicates=(), rejected=rejected)
+
+
+def timezone_loader(timezone: str):
+    async def load() -> str:
+        return timezone
+
+    return load
+
+
+def ingestion_factory(service: object):
+    @asynccontextmanager
+    async def open_service():
+        yield service
+
+    return open_service
 
 
 def make_update(*, user_id: int, text: str, update_id: int = 42) -> Update:
@@ -55,9 +70,7 @@ def make_update(*, user_id: int, text: str, update_id: int = 42) -> Update:
     )
 
 
-def capture_logger(
-    name: str, monkeypatch: pytest.MonkeyPatch
-) -> CapturingHandler:
+def capture_logger(name: str, monkeypatch: pytest.MonkeyPatch) -> CapturingHandler:
     logger = logging.getLogger(name)
     handler = CapturingHandler()
     monkeypatch.setattr(logger, "handlers", [handler])
@@ -83,6 +96,11 @@ def test_json_formatter_omits_every_non_allowlisted_field() -> None:
             "description": "Coffee",
             "telegram_text": "coffee 350",
             "token": "login-secret",
+            "session": "session-secret",
+            "item_count": 4,
+            "saved_count": 2,
+            "duplicate_count": 1,
+            "rejected_count": 1,
         }
     )
 
@@ -98,6 +116,10 @@ def test_json_formatter_omits_every_non_allowlisted_field() -> None:
         "outcome",
         "latency_ms",
         "error_type",
+        "item_count",
+        "saved_count",
+        "duplicate_count",
+        "rejected_count",
     }
     assert payload["event"] == "transaction_created"
     rendered = json.dumps(payload)
@@ -105,6 +127,7 @@ def test_json_formatter_omits_every_non_allowlisted_field() -> None:
     assert "Coffee" not in rendered
     assert "coffee 350" not in rendered
     assert "login-secret" not in rendered
+    assert "session-secret" not in rendered
 
 
 def test_json_formatter_omits_absent_optional_fields_and_message() -> None:
@@ -206,9 +229,7 @@ async def test_malformed_telegram_update_is_sanitized_in_response_and_logs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_app()
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        telegram_webhook_secret="expected"
-    )
+    app.dependency_overrides[get_settings] = lambda: Settings(telegram_webhook_secret="expected")
     app.dependency_overrides[get_bot] = lambda: FakeBot()
     output = StringIO()
     handler = logging.StreamHandler(output)
@@ -263,7 +284,8 @@ async def test_wrong_webhook_secret_logs_only_rejection_event(
             payload={"private": "telegram text"},
             bot=FakeBot(),
             settings=Settings(telegram_webhook_secret="expected"),
-            transaction_service=FakeTransactionService(),  # type: ignore[arg-type]
+            session=object(),  # type: ignore[arg-type]
+            ingestion_service_factory=object(),  # type: ignore[arg-type]
             login_service=object(),  # type: ignore[arg-type]
             secret_token="wrong",
         )
@@ -276,8 +298,8 @@ async def test_wrong_webhook_secret_logs_only_rejection_event(
     ("update", "expected_event"),
     [
         (make_update(user_id=2, text="private 350"), "foreign_user_rejected"),
-        (make_update(user_id=1, text="not-an-expense"), "parser_rejected"),
-        (make_update(user_id=1, text="coffee 350"), "transaction_created"),
+        (make_update(user_id=1, text="not-an-expense"), "batch_processed"),
+        (make_update(user_id=1, text="coffee 350"), "batch_processed"),
     ],
 )
 async def test_telegram_router_logs_named_events_without_message_text(
@@ -291,7 +313,8 @@ async def test_telegram_router_logs_named_events_without_message_text(
         update,
         bot=FakeBot(),
         settings=Settings(authorized_telegram_user_id=1),
-        transaction_service=FakeTransactionService(),  # type: ignore[arg-type]
+        owner_timezone_loader=timezone_loader("Europe/Moscow"),
+        ingestion_service_factory=ingestion_factory(FakeIngestionService()),  # type: ignore[arg-type]
         login_service=object(),  # type: ignore[arg-type]
     )
 
@@ -299,3 +322,11 @@ async def test_telegram_router_logs_named_events_without_message_text(
     rendered = JsonFormatter().format(handler.records[0])
     assert update.message is not None
     assert update.message.text not in rendered
+    for forbidden in ("amount", "description", "token", "session"):
+        assert forbidden not in rendered
+    if expected_event == "batch_processed":
+        record = handler.records[0]
+        assert record.request_id == str(update.update_id)
+        assert record.saved_count == 0
+        assert record.duplicate_count == 0
+        assert record.rejected_count in {0, 1}

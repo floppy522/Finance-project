@@ -1,141 +1,222 @@
-# Task 3 report
+# Task 3 report — Learned Corrections and Local Category Resolver
 
-## Status
+## Status and scope
 
-Implemented the transaction schemas, PostgreSQL repository, service, and HTTP routes. The
-temporary `get_current_user_id()` dependency is explicitly documented for replacement by
-Task 4. No authentication or Telegram behavior was added.
+Implemented only Task 3:
 
-Commit: `23b000f29ac5a444b90b5ceedf717aa2a6d24866`
+- immutable 17-entry expense/income category catalog with the exact release codes,
+  Russian names, and sort order;
+- stable description normalization and `SequenceMatcher` similarity;
+- frozen resolver/provider DTOs and `CategoryProvider` protocol;
+- learned exact and unique fuzzy matching, deterministic whole-word/phrase rules,
+  provider validation, and safe type-matched fallback;
+- active category reads plus owner-scoped correction reads and PostgreSQL upsert;
+- unit coverage and real PostgreSQL integration tests for correction replacement and
+  owner/type isolation.
 
-## RED evidence
+No Task 4 OpenAI adapter, Task 5 ingestion, Task 7 API, or unrelated code was changed.
+The resolver contains no logging calls, so raw descriptions and provider responses are not
+written to logs.
 
-- Service tests: collection failed with `ModuleNotFoundError: No module named
-  'moneyflow.transactions'` before production modules existed.
-- Route tests: both failed against the pre-route application as expected: POST returned 404
-  instead of 201 and GET returned the 404 object instead of an array.
+## TDD RED evidence
 
-## GREEN and verification evidence
-
-The provided `uv run` entrypoint could not be used in this copied worktree because its
-`.venv/bin/python` symlink points to a munged/nonexistent path and uv attempted read-only
-root cache/install directories. Verification therefore used the same installed locked venv
-packages with the available Python 3.13 runtime explicitly:
+The two test files were created before any `moneyflow.categories` production module. The exact
+Task 3 command was then run:
 
 ```text
-PYTHONPATH=.venv/lib/python3.13/site-packages:src \
-  /tmp/moneyflow-uv-python/cpython-3.13-linux-x86_64-gnu/bin/python3.13 \
-  -m pytest tests/unit tests/integration/test_transactions.py -q
-12 passed, 1 warning in 0.23s
+UV_CACHE_DIR=/tmp/moneyflow-uv-cache \
+UV_PYTHON_INSTALL_DIR=/tmp/moneyflow-uv-python \
+uv run pytest tests/unit/test_category_resolver.py \
+  tests/integration/test_category_repository.py -v
 
-... -m ruff check src tests
+collected 0 items / 2 errors
+E ModuleNotFoundError: No module named 'moneyflow.categories'
+ERROR tests/unit/test_category_resolver.py
+ERROR tests/integration/test_category_repository.py
+```
+
+This was the expected RED: collection failed solely because the requested package did not yet
+exist.
+
+## GREEN evidence
+
+The worktree-local `.venv` interpreter link is rewritten to a nonexistent munged path between
+tool calls in this environment. All final `uv` checks therefore kept the required cache and
+Python-install variables and used a disposable safe environment outside the worktree via
+`UV_PROJECT_ENVIRONMENT=/tmp/moneyflow-task3-venv`.
+
+Fresh Task 3 unit verification:
+
+```text
+uv run pytest tests/unit/test_category_resolver.py -q
+34 passed in 0.08s
+```
+
+Fresh full unit regression verification:
+
+```text
+uv run pytest tests/unit -q
+127 passed, 1 warning in 1.84s
+```
+
+The one warning is the existing upstream Starlette deprecation warning emitted from
+FastAPI's test client import.
+
+Fresh static checks:
+
+```text
+uv run ruff check src/moneyflow/categories \
+  tests/unit/test_category_resolver.py \
+  tests/integration/test_category_repository.py
 All checks passed!
 
-... -m mypy
-Success: no issues found in 11 source files
-
-git diff --check
-exit 0
+uv run mypy
+Success: no issues found in 26 source files
 ```
 
-The warning is an upstream Starlette deprecation warning emitted while importing the existing
-FastAPI test client.
+The unit/static suite verifies, among other cases:
 
-Static SQL checks confirmed that the repository calls PostgreSQL `insert(Transaction)` followed
-by `on_conflict_do_nothing(index_elements=["source", "source_event_id"])`, and that both the
-authoritative model and migration define the matching `(source, source_event_id)` unique
-constraint.
+- the exact 17-row catalog and exact minimum release keywords;
+- whole normalized word/phrase boundaries (`кофейник` does not match `кофе`);
+- tied local categories pass to the next source rather than selecting arbitrarily;
+- exact learned matches precede rules, and fuzzy matches require `>= 0.90` plus a
+  `>= 0.05` lead over the second candidate;
+- correction reads include both owner and transaction type predicates;
+- correction upsert compiles to PostgreSQL
+  `ON CONFLICT (owner, transaction_type, normalized_description) DO UPDATE`;
+- the provider receives only unresolved items and no more than five nearest same-type
+  correction examples;
+- unknown/missing IDs, incompatible or unknown categories, confidence below 0.75 or above 1,
+  non-finite/non-numeric/bool confidence, and provider exceptions all fall back safely;
+- valid provider decisions use the fixed category type and rounded integer confidence.
 
-## PostgreSQL integration status
+## PostgreSQL integration gate — deferred
 
-Blocked: Docker is unavailable (`command -v docker` returned no executable), so a live
-PostgreSQL concurrency test was not run and is not claimed as passing. Concurrency semantics
-are covered at the service boundary with a lock-protected fake, while the production repository
-uses the required single-statement PostgreSQL conflict path rather than check-then-insert.
-
-## Concerns
-
-- The live PostgreSQL path, especially two-session conflict waiting and winner selection, still
-  needs execution in an environment with PostgreSQL.
-- The temporary owner dependency always returns `1`, exactly as scoped in this task; Task 4 must
-  replace it before deployment.
-
-## Fix: Task 3 review findings
-
-### Changes
-
-- Restored the stable `CreateTransactionCommand` contract: the dataclass remains frozen,
-  `occurred_at` is a required `datetime`, and `source_event_id: str | None` is required with no
-  default. `CreateTransactionRequest.occurred_at` is also required, so the route never constructs
-  a command with an unresolved timestamp. The now-unused service clock fallback was removed.
-- Replaced the fake integration suite with PostgreSQL tests backed by the real `AsyncEngine`,
-  `async_sessionmaker`, `AsyncSession`, persisted `UserSettings`, production
-  `TransactionService`, and production `TransactionRepository`.
-- The concurrency test opens two independent real sessions, invokes the production service in
-  `asyncio.gather`, and asserts both the winning UUID and a one-row database count.
-- Route tests override only production `get_session` with a real test session. They retain the
-  production route, `get_transaction_service`, `TransactionService`, and repository path.
-- Moved fast validation/normalization checks to unit tests and added a unit check that compiles the
-  repository's captured idempotent insert with the PostgreSQL dialect.
-
-### TDD evidence
-
-Before changing production code:
+The real integration module was created and is collectible:
 
 ```text
-... -m pytest tests/unit/test_transaction_service.py -q
-F.....
-assert datetime.datetime | None is datetime
-1 failed, 5 passed
+uv run pytest tests/integration/test_category_repository.py --collect-only -q
+2 tests collected in 0.04s
 ```
 
-After restoring the command contract, the same command passed (`6 passed`). The real integration
-suite collected before production changes:
+No safe live PostgreSQL configuration is available: `ENVIRONMENT=test` and an explicit
+`TEST_DATABASE_URL` are absent. Per the repository safety fixture, the combined run stops before
+any connection attempt with:
 
 ```text
-... -m pytest tests/integration/test_transactions.py --collect-only -q
-6 tests collected
+34 unit tests passed
+2 integration setup errors:
+RuntimeError: destructive integration tests require ENVIRONMENT=test
 ```
 
-### Verification
-
-The worktree's `uv` environment remains unusable for the reason recorded above, so checks used the
-installed locked packages and Python 3.13 runtime:
+No production database URL was inspected, inferred, or used. The deferred gate must be run in an
+environment with an explicitly provisioned PostgreSQL database whose name ends in `_test` or
+`_e2e`:
 
 ```text
-PYTHONPATH=.venv/lib/python3.13/site-packages:src \
-  /tmp/moneyflow-uv-python/cpython-3.13-linux-x86_64-gnu/bin/python3.13 \
-  -m pytest tests/unit -q
-8 passed, 1 upstream Starlette deprecation warning
+ENVIRONMENT=test TEST_DATABASE_URL=<explicit safe PostgreSQL test URL> \
+uv run pytest tests/integration/test_category_repository.py -v
+```
 
-... -m pytest tests/integration/test_transactions.py --collect-only -q
-6 tests collected
+The live tests exercise the production `AsyncSession` repository and assert both that a second
+same-owner/type/normalized-description upsert replaces the category without adding a row, and
+that reads cannot cross owner or transaction type.
 
-... -m ruff check src tests
+## Self-review
+
+- Owner safety: every correction read filters by owner and type; the upsert conflict identity
+  includes owner, type, and normalized description.
+- Fixed-category safety: learned rows and provider decisions are accepted only when the code is
+  in the immutable catalog and matches the transaction type.
+- Resolution priority: learned exact/fuzzy, then local rules, then the optional provider, then
+  matching `expense.other`/`income.other` fallback with review required.
+- Boundary safety: local matching compares contiguous normalized token sequences, never raw
+  substrings.
+- Ambiguity safety: fuzzy ties/near-ties and highest-priority local category ties do not guess.
+- Provider safety: only unresolved allowed IDs are considered; every accepted decision has a
+  known same-type code and finite numeric confidence in `[0.75, 1.0]`.
+- Privacy: no logger is used and descriptions are not emitted.
+- Scope: the diff is limited to the six requested category modules, the two requested test
+  modules, and this Task 3 report.
+
+## Review fixes — exact fuzzy lead and provider category type
+
+Two independent review regressions were implemented with separate RED/GREEN cycles.
+
+### Exact `0.05` fuzzy lead
+
+The public `CategoryResolver.resolve()` regression uses one description whose two
+`SequenceMatcher` scores are `0.95` and `0.90`. Before the production change:
+
+```text
+uv run pytest \
+  tests/unit/test_category_resolver.py::test_fuzzy_correction_accepts_exactly_five_point_lead \
+  -vv
+
+FAILED
+expected: CategoryDecision("expense.groceries", learned, 95, false)
+actual:   CategoryDecision("expense.other", fallback, 0, true)
+```
+
+Root cause: binary floating-point subtraction produces `0.04999999999999993`, which the direct
+`lead < 0.05` comparison rejected even though the source scores have the exact specified
+five-point lead. The comparison now uses an absolute tolerance equal only to the sum of one ULP
+for each score. This covers arithmetic representation error without materially lowering the
+`>= 0.05` threshold.
+
+Targeted GREEN, including the existing below-threshold guard:
+
+```text
+2 passed in 0.04s
+```
+
+### Non-string/nonhashable provider category
+
+The provider regression constructs `ProviderDecision(cast(str, []), 0.9)` and invokes the public
+resolver. Before the production change:
+
+```text
+uv run pytest \
+  tests/unit/test_category_resolver.py::test_non_string_nonhashable_provider_category_falls_back \
+  -vv
+
+FAILED
+TypeError: unhashable type: 'list'
+```
+
+Root cause: `category_matches_type()` performed a catalog mapping lookup before the provider
+category's runtime type was validated. `_provider_decision()` now explicitly requires `str`
+before lookup, so malformed provider values fail closed to the normal review fallback.
+
+Targeted GREEN, including all existing invalid-provider cases:
+
+```text
+9 passed in 0.05s
+```
+
+### Fresh final verification after formatting
+
+```text
+uv run pytest tests/unit/test_category_resolver.py -q
+36 passed in 0.09s
+
+uv run pytest tests/unit -q
+129 passed, 1 warning in 1.83s
+
+uv run ruff check src/moneyflow/categories \
+  tests/unit/test_category_resolver.py \
+  tests/integration/test_category_repository.py
 All checks passed!
 
-... -m mypy
-Success: no issues found in 11 source files
+uv run ruff format --check src/moneyflow/categories \
+  tests/unit/test_category_resolver.py \
+  tests/integration/test_category_repository.py
+8 files already formatted
 
-git diff --check
-exit 0
+uv run mypy
+Success: no issues found in 26 source files
 ```
 
-`test_idempotent_insert_compiles_for_postgresql` executes the production repository with a
-capturing session, compiles the emitted statement through `postgresql.dialect()`, and verifies
-`ON CONFLICT (source, source_event_id) DO NOTHING` plus the transaction `RETURNING` clause.
-
-### Live PostgreSQL blocker
-
-Docker is unavailable (`command -v docker` produced no path). A single live attempt collected all
-six integration tests and each stopped in fixture setup while opening the real engine connection:
-
-```text
-OSError: Multiple exceptions: [Errno 111] Connect call failed ('::1', 5432, 0, 0),
-[Errno 111] Connect call failed ('127.0.0.1', 5432)
-6 errors in 1.58s
-```
-
-The live PostgreSQL integration and two-session concurrency result are therefore blocked and are
-not claimed as passing. They are implemented and collectible for execution where PostgreSQL is
-available.
+The warning remains the pre-existing upstream Starlette test-client deprecation warning. The
+live PostgreSQL gate is unchanged and remains deferred; no database URL was inspected or used
+for these review fixes.

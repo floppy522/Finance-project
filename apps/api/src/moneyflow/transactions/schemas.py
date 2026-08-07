@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from moneyflow.models import TransactionDirection, TransactionType
+from moneyflow.models import CategorySource, TransactionDirection, TransactionType
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +16,10 @@ class CreateTransactionCommand:
     description: str
     source: str
     source_event_id: str | None
+    category_code: str | None = None
+    category_source: CategorySource | None = None
+    category_confidence: int | None = None
+    needs_category_review: bool | None = None
 
 
 class CreateTransactionRequest(BaseModel):
@@ -47,3 +51,14 @@ class TransactionResponse(BaseModel):
     description: str
     source: str
     source_event_id: str | None
+    category_code: str | None
+    category_name_ru: str | None
+    category_source: CategorySource | None
+    category_confidence: int | None
+    needs_category_review: bool | None
+
+
+class UpdateTransactionCategoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category_code: str = Field(min_length=1, max_length=64)

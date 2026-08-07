@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     authorized_telegram_user_id: int = 1
     public_web_url: str = "http://localhost:5173"
     session_cookie_secure: bool = False
+    openai_api_key: SecretStr | None = None
+    openai_category_model: str = "gpt-5.6"
 
     @model_validator(mode="after")
     def production_requires_secure_session_cookie(self) -> Self:

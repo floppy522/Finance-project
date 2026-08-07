@@ -66,7 +66,7 @@ test.beforeAll(async ({ request }) => {
   runPython(["-m", "moneyflow.bootstrap"]);
 });
 
-test("authorized Telegram expense is idempotent, visible, and uses a one-time login", async ({
+test("batch categories are idempotent, correctable, learned, and use a one-time login", async ({
   browser,
   page,
   request,
@@ -75,7 +75,10 @@ test("authorized Telegram expense is idempotent, visible, and uses a one-time lo
   expect(loginToken).toMatch(/^[A-Za-z0-9_-]+$/);
   expect(Number(runPython(["support/count_transactions.py"]))).toBe(0);
 
-  const update = telegramUpdate(7001, "кофе 350");
+  const update = telegramUpdate(
+    7001,
+    "15 июля\nкофе 350\nтакси 780\n16 июля\nзарплата +150000\nВкусВилл 4250\nнепонятная строка",
+  );
   for (let delivery = 0; delivery < 2; delivery += 1) {
     const response = await request.post("http://127.0.0.1:8000/telegram/webhook", {
       data: update,
@@ -83,17 +86,49 @@ test("authorized Telegram expense is idempotent, visible, and uses a one-time lo
     });
     expect(response.status()).toBe(204);
   }
-  expect(Number(runPython(["support/count_transactions.py"]))).toBe(1);
+  expect(Number(runPython(["support/count_transactions.py"]))).toBe(4);
 
   const loginUrl = `http://127.0.0.1:5173/login?token=${encodeURIComponent(loginToken)}`;
   await page.goto(loginUrl);
   await expect(page).toHaveURL("http://127.0.0.1:5173/");
 
-  const matchingRow = page
+  const expectedRows = [
+    ["кофе", "expense.cafes", "350,00 ₽"],
+    ["такси", "expense.transport", "780,00 ₽"],
+    ["зарплата", "income.salary", "150 000,00 ₽"],
+    ["ВкусВилл", "expense.groceries", "4 250,00 ₽"],
+  ] as const;
+  for (const [description, categoryCode, amount] of expectedRows) {
+    const row = page.getByRole("row").filter({ hasText: description }).filter({ hasText: amount });
+    await expect(row).toHaveCount(1);
+    await expect(row.getByLabel(`Категория: ${description}`)).toHaveValue(categoryCode);
+  }
+
+  await page.getByLabel("Категория: кофе").selectOption("expense.groceries");
+  await expect(page.getByLabel("Категория: кофе")).toHaveValue("expense.groceries");
+  await expect(page.getByLabel("Категория: кофе")).toBeEnabled();
+
+  await page.getByLabel("Фильтр проверки").selectOption("true");
+  await expect(page.getByText("По выбранным фильтрам операций нет.")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByLabel("Категория: кофе")).toHaveValue("expense.groceries");
+
+  const learnedUpdate = telegramUpdate(7002, "Кофе! 360");
+  const learnedResponse = await request.post("http://127.0.0.1:8000/telegram/webhook", {
+    data: learnedUpdate,
+    headers: { "X-Telegram-Bot-Api-Secret-Token": "e2e-webhook-secret" },
+  });
+  expect(learnedResponse.status()).toBe(204);
+  expect(Number(runPython(["support/count_transactions.py"]))).toBe(5);
+
+  await page.reload();
+  const learnedRow = page
     .getByRole("row")
-    .filter({ hasText: "кофе" })
-    .filter({ hasText: "350,00 ₽" });
-  await expect(matchingRow).toHaveCount(1);
+    .filter({ hasText: "Кофе!" })
+    .filter({ hasText: "360,00 ₽" });
+  await expect(learnedRow).toHaveCount(1);
+  await expect(learnedRow.getByLabel("Категория: Кофе!")).toHaveValue("expense.groceries");
 
   const cleanContext = await browser.newContext();
   try {

@@ -1,181 +1,183 @@
-# Release 0 final-fix report
+# Release 1 final-fix report
 
-## Status and commits
+## Status and implementation commit
 
-All final whole-branch Important findings were addressed in implementation commit
-`4fb4af8` (`fix: close release zero security review findings`). This report is committed
-separately so it can name the implementation commit exactly.
+Final reviewer findings were addressed in implementation commit `94d91eb`
+(`fix: enforce release one category and recovery gates`) on top of reviewed HEAD
+`b012689`.
 
-No model or schema shape changed, so the authoritative SQLAlchemy models and migration remain in
-parity without a new migration. Mutable image tags remain the explicitly accepted Minor. `/login`
-update-level idempotency remains the accepted Minor; no outbox or other fragile mechanism was
-added.
+No database migration or destructive production restore command was added. The
+release-1 schema stays at Alembic revision `a841bc64e210`.
 
-## Finding coverage
+## Recovery and deployment safety
 
-### 1. Telegram owner-private-chat boundary
+- `ops/restore-check.sh` accepts only `legacy` and `release1`, defaults to the
+  current `release1` schema, and rejects unknown modes with exit 2.
+- Both modes preserve the fixed `moneyflow_restore_check` database, temporary
+  container/file cleanup trap, root-only temporary dump permissions, and
+  `--network none`.
+- Legacy validation requires all release-0 tables, exact Alembic revision
+  `c56238feadc4`, and absence of the category tables. Release-1 validation
+  requires the same foundation plus `categories`, `category_corrections`, and
+  exact revision `a841bc64e210`.
+- The runbook now requires a fresh encrypted legacy backup and successful
+  `restore-check.sh legacy` before any migration or `up`, then explicit 0002,
+  then a second fresh backup and successful `restore-check.sh release1` before
+  services start.
+- Code-only rollback after 0002 is prohibited. The documented preference is a
+  forward fix; an alternative requires an explicitly reviewed/approved restore
+  of the exact verified pre-migration backup and explicit acknowledgement that
+  every write after that backup will be lost. Health-only validation is
+  explicitly insufficient. No automatic production restore or downgrade
+  command is provided.
 
-- Production: `apps/api/src/moneyflow/telegram/router.py` now requires an authorized sender, a
-  `private` chat, and `message.chat.id == message.from_user.id` before reading message text or
-  dispatching a command. Authorized group, supergroup, channel, and mismatched-private contexts
-  return silently.
-- Tests: `apps/api/tests/unit/test_telegram_router.py` and
-  `apps/api/tests/integration/test_telegram_webhook.py` cover every rejected chat context and prove
-  parsing, transaction creation, command execution, bot replies, and financial persistence do not
-  occur.
-- RED: focused router tests failed 5/5: four non-owner-private `/login` updates reached command
-  processing and `/logout` did not revoke.
-- GREEN: the focused router/parser run passed 13/13; the complete API unit run passed 59/59.
+### RED / GREEN
 
-### 2. Telegram session revocation
-
-- Production: authorized owner-private `/logout` and `/revoke_sessions` call
-  `LoginService.revoke_all_sessions()` and reply `Все веб-сессии завершены.` No financial content
-  is logged.
-- Tests: unit coverage proves the service call and confirmation; PostgreSQL-backed webhook
-  integration coverage exchanges a real login token, verifies `/api/auth/me`, sends `/logout`, and
-  verifies the browser session is then unauthorized.
-- RED/GREEN: included in the 5-failure router RED and 13-pass focused GREEN above. The integration
-  test collects successfully; live execution is part of the PostgreSQL gate below.
-
-### 3. Exception and log privacy
-
-- Production: `apps/api/src/moneyflow/db.py` enables SQLAlchemy `hide_parameters=True`.
-  `apps/api/src/moneyflow/logging.py` installs allowlisted JSON formatting on root, MoneyFlow, and
-  Uvicorn loggers; disables the Uvicorn access logger; sanitizes FastAPI and Pydantic validation
-  failures; and adds an HTTP exception middleware that returns a generic 500 without re-raising
-  into Uvicorn. `apps/api/Dockerfile` continues to run Uvicorn with `--no-access-log`.
-- Tests: `apps/api/tests/unit/test_logging.py` injects an exception whose message contains an amount,
-  description, message, and token, then asserts the response is generic and the captured log
-  contains neither private field names nor values. A malformed Telegram/Pydantic update receives a
-  generic 422 with the same captured-log assertions. It also verifies engine parameter hiding and
-  root/Uvicorn logger hardening.
-- RED: the five-test privacy/timezone contract run failed 5/5: timezone was absent, engine parameter
-  hiding was false, root/Uvicorn handlers were unsafe, exceptions escaped, and malformed Telegram
-  validation exposed the Pydantic error path.
-- GREEN: the same five focused tests passed 5/5; the full unit suite passed 59/59.
-
-### 4. Owner-timezone web dates
-
-- Production: `GET /api/auth/me` queries `UserSettings.timezone` and returns it with the owner ID.
-  `apps/web/src/api/client.ts` fetches that authenticated setting, and
-  `TransactionList.tsx` passes it explicitly to `Intl.DateTimeFormat`.
-- Tests: API unit/integration expectations cover `Europe/Moscow` from owner settings.
-  `TransactionList.test.tsx` uses `2026-07-17T21:30:00Z`, proves it is July 17 in
-  `America/New_York`, and requires July 18 in the owner's `Europe/Moscow` timezone.
-- RED: the web regression failed 1/3, rendering July 17 from the browser default.
-- GREEN: web tests passed 4/4; strict TypeScript and the Vite production build passed.
-
-### 5. Destructive-test and E2E isolation
-
-- Production/test harness: `apps/api/tests/conftest.py` has no database default. Destructive
-  integration fixtures require exact `ENVIRONMENT=test`, an explicit `TEST_DATABASE_URL`,
-  PostgreSQL, and a database suffix `_test` or `_e2e` before creating an engine.
-- E2E: `tests/e2e/playwright.config.ts` also requires explicit `TEST_DATABASE_URL`, never reuses
-  either server, starts the API with a per-run identity, and
-  `tests/e2e/vertical-slice.spec.ts` verifies the identity header before the dedicated reset.
-  `tests/e2e/support/prepare_database.py` requires the explicit test URL to match `DATABASE_URL`
-  and preserves the isolated `_e2e` reset.
-- Tests: `test_database_safety.py`, `test_prepare_database.py`, and deployment security sentinels
-  cover missing environment, missing URL, unsafe suffixes, mismatched URLs, server reuse, and
-  identity checking.
-- RED: the API guard test initially failed collection because no guard existed; configuration
-  sentinels failed on reusable Playwright servers. E2E guard tests then exposed the production
-  cookie validator interaction and were adjusted to test the intended boundary.
-- GREEN: API configuration/deployment guards passed 19/19; E2E database guards passed 5/5;
-  Playwright strict TypeScript compilation and one-test collection passed.
-
-### 6. Production cookie fail-closed
-
-- Production: `Settings` rejects case-insensitive `production` with an insecure session cookie.
-  `compose.prod.yaml` explicitly supplies `ENVIRONMENT=production` and
-  `SESSION_COOKIE_SECURE=true` to the API.
-- Runbook: new `.env` files contain both values; the validation block requires and checks both on
-  every run, including pre-existing `.env` files.
-- Tests: `test_config.py` covers reject/accept behavior; deployment sentinels inspect Compose and
-  the idempotent runbook.
-- RED: insecure production settings did not raise, and Compose/runbook sentinels failed.
-- GREEN: API configuration/deployment guards passed 19/19.
-
-### 7. Service secret minimization
-
-- `compose.prod.yaml` no longer gives the database or API a broad `env_file`. The database receives
-  only `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`. The API receives only its seven
-  required application variables. Web receives none; Caddy receives only `MONEYFLOW_DOMAIN`.
-- `test_deployment_security.py` asserts the exact per-service environment key sets.
-- RED: the sentinel found `env_file: .env` on both database and API.
-- GREEN: all deployment security sentinels passed.
-
-### Additional required regressions
-
-- `test_concurrent_dual_exchange_creates_exactly_one_session` uses two independent real
-  PostgreSQL sessions, concurrently exchanges the same login token, and requires exactly one raw
-  session result, one `PermissionError`, and one persisted `WebSession`.
-- `test_preserves_mixed_case_description` proves `Кофе 350` stores the description as `Кофе`.
-  This was a characterization regression and was already green before production changes.
-
-## Final verification evidence
-
-Fresh combined verification after all changes:
+RED command:
 
 ```text
-API unit:                 59 passed, 1 upstream Starlette deprecation warning
-API integration collect: 27 tests collected
-API Ruff:                 All checks passed
-API mypy:                 Success, 19 source files
-E2E guard pytest:         5 passed
-E2E support Ruff:         All checks passed
-E2E support mypy:         Success, 3 source files
-Web Vitest:               4 passed
-Web TypeScript:           exit 0
-Web Vite build:           exit 0, 79 modules transformed
-E2E TypeScript:           exit 0
-Playwright collection:    1 test in 1 file
-Shell/YAML/sentinels:     exit 0
-git diff --check:         exit 0
+uv run pytest tests/unit/test_deployment_security.py -q
+2 failed, 15 passed
 ```
 
-Representative commands:
+The failures were exactly the absent schema-mode contract and absent
+pre/post-migration ordering/rollback contract.
 
-```sh
-PYTHONPATH=apps/api/.venv/lib/python3.13/site-packages:apps/api/src \
-  /tmp/moneyflow-uv-python/cpython-3.13.14-linux-x86_64-gnu/bin/python3.13 \
-  -m pytest apps/api/tests/unit -q
+GREEN evidence:
 
-cd apps/api
-PYTHONPATH=.venv/lib/python3.13/site-packages:src \
-  /tmp/moneyflow-uv-python/cpython-3.13.14-linux-x86_64-gnu/bin/python3.13 \
-  -m pytest tests/integration --collect-only -q
-PYTHONPATH=.venv/lib/python3.13/site-packages:src \
-  /tmp/moneyflow-uv-python/cpython-3.13.14-linux-x86_64-gnu/bin/python3.13 \
-  -m ruff check src tests
-PYTHONPATH=.venv/lib/python3.13/site-packages:src \
-  /tmp/moneyflow-uv-python/cpython-3.13.14-linux-x86_64-gnu/bin/python3.13 \
-  -m mypy
-
-cd ../web
-node_modules/.bin/vitest run
-node_modules/.bin/tsc -b
-node_modules/.bin/vite build
-
-cd ../../tests/e2e
-node_modules/.bin/tsc --noEmit --target ES2022 --module NodeNext \
-  --moduleResolution NodeNext --strict --types node,@playwright/test \
-  playwright.config.ts vertical-slice.spec.ts
-TEST_DATABASE_URL=postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_e2e \
-  node_modules/.bin/playwright test --list
+```text
+17 passed in 0.05s
+bash -n ops/restore-check.sh ops/backup.sh: exit 0
 ```
 
-## Remaining runtime gates
+## Active category boundary and historical display
 
-- PostgreSQL is unavailable. The focused live dual-exchange command reached the guarded explicit
-  `moneyflow_test` target but stopped in fixture setup with
-  `ConnectionRefusedError: [Errno 111]` at `127.0.0.1:5432`. No live PostgreSQL test is claimed as
-  passing.
-- `docker`, `caddy`, `age`, and a Chromium/Chrome executable are unavailable. Therefore Compose
-  runtime validation, container builds, Caddy runtime validation, encrypted backup/restore, and
-  the browser E2E execution remain external gates. YAML loading, shell syntax, security sentinels,
-  strict E2E TypeScript, and Playwright collection all passed locally.
-- `systemd-analyze verify` cannot resolve host `docker.service` or the deployment-only
-  `/opt/moneyflow/ops/backup.sh` path in this container, so it is not claimed as a passed runtime
-  gate.
+- `CategoryResolver` now depends on `CategoryRepository`, loads active codes for
+  every requested transaction type, and filters learned corrections, local
+  rules, provider examples, and provider decisions against those DB-owned
+  codes.
+- Missing/inactive `expense.other` or `income.other` raises a clear
+  `CategoryConfigurationError` instead of assigning an inactive fallback.
+- The provider protocol receives the resolver's active-code mapping. The OpenAI
+  payload and response validation use that mapping rather than the static
+  catalog; privacy, strict structured output checks, and the five-example cap
+  remain intact. Lazy construction and close behavior remain intact.
+- `TransactionResponse` and the typed web client expose server-derived
+  `category_name_ru`. The ORM derives it from the category row without filtering
+  on `is_active`, so historical inactive categories keep their Russian name.
+- The web editor injects one disabled, exactly-valued current option when the
+  stored category is absent from the active compatible catalog. Inactive codes
+  remain absent from new choices and the filter catalog. Manual PATCH and filter
+  validation remain active-only.
+
+### RED / GREEN
+
+Initial focused RED:
+
+```text
+53 failed, 25 passed
+```
+
+Failures showed the missing active repository dependency/provider allowlist,
+missing historical response field, and missing timeout seam. The web regression
+was also verified by removing the inactive-current option temporarily:
+
+```text
+1 failed, 14 skipped
+expected expense.archived; received expense.groceries
+```
+
+Focused GREEN:
+
+```text
+resolver/provider/category API: 78 passed
+TransactionList:                15 passed
+```
+
+## Strict provider deadline
+
+`OpenAICategoryProvider` wraps the Responses parse await in an
+`asyncio.timeout` wall-clock boundary. The production default is five seconds;
+tests inject `0.01` seconds. Timeout and cancellation of the hanging parse
+return an empty mapping for resolver fallback, with no payload/response logging.
+The SDK client still uses its independent five-second transport timeout and
+zero retries.
+
+RED was part of the 53-failure focused run (`timeout_seconds` was absent).
+GREEN is covered by the 78-pass focused run; the hanging fake completes through
+fallback within the test's 0.2-second outer guard.
+
+## Final re-review: post-PATCH name safety and zero-choice history
+
+Follow-up implementation commit `71436ab` (`fix: preserve category names after
+updates`) addresses the final Important and Minor findings.
+
+- After a successful manual-category commit, `CategoryService` assigns the
+  already-loaded active `category.name_ru` to the returned transaction. This
+  replaces any expired/stale `column_property` value before the route performs
+  immediate Pydantic serialization and does not issue a lazy database load.
+- The assignment occurs only after a successful commit. The commit-failure
+  regression still rolls back, reraises, and retains the previous name.
+- A historical inactive web row with zero active compatible choices now shows
+  its server-derived Russian name as read-only text. It exposes no selector or
+  new inactive choice and no longer mislabels the row as `Без категории`.
+
+RED evidence:
+
+```text
+API category service: 1 failed, 11 passed
+  expected Кафе и рестораны; serialized category_name_ru was None
+Web focused:          1 failed, 15 skipped
+  Архивная категория absent; rendered Без категории
+```
+
+GREEN evidence:
+
+```text
+API service/category response focused: 27 passed
+Web TransactionList focused:           16 passed
+```
+
+## Fresh final verification
+
+```text
+API unit suite:             252 passed, 1 upstream Starlette warning
+API integration collect:   44 tests collected
+API Ruff:                   All checks passed
+API mypy:                   Success, 30 source files
+E2E support tests:          5 passed
+E2E support Ruff:           All checks passed
+E2E support mypy:           Success, 6 source files
+Web Vitest:                 17 passed in 2 files
+Web TypeScript lint:        exit 0
+Web production build:       79 modules transformed, exit 0
+E2E strict TypeScript:      exit 0
+Playwright collection:      1 test in 1 file
+Deployment sentinels:       included in 251-pass unit suite; 17/17 focused
+Bash syntax:                exit 0
+Compose YAML parse:         exit 0
+Targeted added-secret scan: no match, exit 0
+Dump/key/.env file scan:    no repository artifact found, exit 0
+git diff --check:           exit 0
+```
+
+The secret scan checks added diff lines for realistic OpenAI keys, private-key
+blocks, and Telegram-token shapes. The artifact scan excludes dependency/build
+trees and checks the worktree for `.env`, dump, encrypted dump, age identity,
+PEM, and key files. No real provider request or secret-bearing command ran.
+
+## Deferred runtime gates
+
+- Live PostgreSQL integration execution remains deferred. Per instruction, no
+  database or network connection was attempted; only all 44 integration tests
+  were collected.
+- Docker and `age` are unavailable, so container/Compose runtime checks,
+  encrypted backup creation, and live legacy/release1 restore checks remain
+  release-host gates. Static YAML, Bash syntax, and deployment sentinels passed.
+- Chromium/Chrome is unavailable, so the Playwright browser run remains
+  deferred. Strict TypeScript and one-test Playwright collection passed.
+- `shellcheck` is unavailable; `bash -n` and the deployment sentinels are the
+  local shell gates.
+- The Minor positive fallback-review E2E assertion remains deferred. The agreed
+  four-to-five transaction counts were not changed, and no clean post-count
+  sixth update was added in this final-fix wave.

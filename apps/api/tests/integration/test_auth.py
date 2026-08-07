@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from moneyflow.auth.routes import get_login_service
 from moneyflow.auth.service import LoginService
 from moneyflow.db import get_session
 from moneyflow.main import create_app
@@ -76,9 +77,7 @@ async def test_concurrent_dual_exchange_creates_exactly_one_session(
     assert sum(isinstance(outcome, str) for outcome in outcomes) == 1
     assert sum(isinstance(outcome, PermissionError) for outcome in outcomes) == 1
     async with session_factory() as assertion_session:
-        assert await assertion_session.scalar(
-            select(func.count()).select_from(WebSession)
-        ) == 1
+        assert await assertion_session.scalar(select(func.count()).select_from(WebSession)) == 1
 
 
 async def test_login_token_expires_at_exactly_ten_minutes(session: AsyncSession) -> None:
@@ -119,7 +118,15 @@ async def client(
         async with session_factory() as route_session:
             yield route_session
 
+    async def override_get_login_service() -> AsyncIterator[LoginService]:
+        async with session_factory() as route_session:
+            yield LoginService(
+                route_session,
+                clock=lambda: NOW + timedelta(minutes=1),
+            )
+
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_login_service] = override_get_login_service
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as auth_client:
         yield auth_client
 
