@@ -260,3 +260,26 @@ def test_rollback_does_not_present_health_as_schema_validation() -> None:
 
     assert "health response alone does not validate" in rollback
     assert "curl " not in rollback
+
+
+def test_ci_runs_all_release_gates_without_repository_secrets() -> None:
+    workflow_path = REPOSITORY_ROOT / ".github/workflows/ci.yml"
+    assert workflow_path.is_file()
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.load(workflow_text, Loader=yaml.BaseLoader)
+
+    assert workflow["permissions"] == {"contents": "read"}
+    assert "pull_request_target" not in workflow_text
+    assert "${{ secrets." not in workflow_text
+    assert set(workflow["jobs"]) == {"api", "web", "e2e", "release-static"}
+
+    api = workflow["jobs"]["api"]
+    assert api["services"]["postgres"]["image"] == "postgres:18-alpine"
+    assert api["env"]["ENVIRONMENT"] == "test"
+    assert api["env"]["TEST_DATABASE_URL"].endswith("/moneyflow_test")
+
+    e2e = workflow["jobs"]["e2e"]
+    assert e2e["services"]["postgres"]["image"] == "postgres:18-alpine"
+    assert e2e["env"]["TEST_DATABASE_URL"].endswith("/moneyflow_e2e")
+    assert "playwright install --with-deps chromium" in workflow_text
+    assert "docker compose -f compose.prod.yaml" in workflow_text

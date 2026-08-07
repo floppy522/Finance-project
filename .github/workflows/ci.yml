@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "agent/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_test
+      TEST_DATABASE_URL: postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_test
+      AUTHORIZED_TELEGRAM_USER_ID: "1"
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: moneyflow_test
+          POSTGRES_USER: moneyflow
+          POSTGRES_PASSWORD: moneyflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U moneyflow -d moneyflow_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: uv sync --locked --all-groups
+      - name: Apply migrations
+        working-directory: apps/api
+        run: uv run alembic upgrade head
+      - name: Bootstrap test owner
+        working-directory: apps/api
+        run: uv run python -m moneyflow.bootstrap
+      - name: Run API tests
+        working-directory: apps/api
+        run: uv run pytest -v
+      - name: Run API static checks
+        working-directory: apps/api
+        run: |
+          uv run ruff check src tests
+          uv run mypy
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      - name: Test and build web
+        working-directory: apps/web
+        run: |
+          pnpm test --run
+          pnpm lint
+          pnpm build
+
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_e2e
+      TEST_DATABASE_URL: postgresql+asyncpg://moneyflow:moneyflow@127.0.0.1:5432/moneyflow_e2e
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: moneyflow
+          POSTGRES_PASSWORD: moneyflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U moneyflow -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            apps/web/pnpm-lock.yaml
+            tests/e2e/pnpm-lock.yaml
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: uv sync --locked --all-groups
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      - name: Install E2E dependencies
+        working-directory: tests/e2e
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        working-directory: tests/e2e
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run vertical slice
+        working-directory: tests/e2e
+        run: pnpm test
+
+  release-static:
+    runs-on: ubuntu-latest
+    env:
+      MONEYFLOW_DOMAIN: money.example.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: uv sync --locked --all-groups
+      - name: Run deployment sentinels
+        working-directory: apps/api
+        run: uv run pytest tests/unit/test_deployment_security.py -v
+      - name: Check shell scripts
+        run: bash -n ops/*.sh
+      - name: Validate production Compose
+        run: docker compose -f compose.prod.yaml --env-file .env.example config --quiet
+      - name: Reject prohibited artifacts
+        shell: bash
+        run: |
+          if find . -path './.git' -prune -o -type f \( -name '.env' -o -name '*.dump' -o -name '*.dump.age' -o -name '*.agekey' \) -print -quit | grep -q .; then
+            echo "Prohibited secret or backup artifact found"
+            exit 1
+          fi
+          if git grep -I -E -q 'sk-[A-Za-z0-9_-]{16,}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|AGE-SECRET-KEY-' -- . ':(exclude).env.example'; then
+            echo "Prohibited secret pattern found"
+            exit 1
+          fi
