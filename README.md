@@ -11,7 +11,10 @@
 
 MoneyFlow is privately deployed. No public demo is exposed because it processes personal financial data; this repository, its tests, and the synthetic previews below are the review surface.
 
-**Product role:** Valeriy Malov — Product Manager. I owned the problem framing, requirements, prioritization, technical product decisions, acceptance criteria, release process, and verification accountability.
+**Product and delivery role:** Valeriy Malov. I owned the problem framing,
+requirements, prioritization, technical product decisions, acceptance criteria,
+release process, and verification. Implementation was supported by AI coding
+agents through specification-driven, test-driven, and review-gated workflows.
 
 ## The problem
 
