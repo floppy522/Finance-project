@@ -3,11 +3,8 @@
 > Capture personal finances in Telegram. Understand them in the browser.
 
 [![CI](https://github.com/floppy522/moneyflow-personal-finance/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/floppy522/moneyflow-personal-finance/actions/workflows/ci.yml?query=branch%3Amain)
-![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
-![React + TypeScript](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=111111)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![MIT License](https://img.shields.io/badge/License-MIT-3DA639)
+[![Release](https://img.shields.io/github/v/release/floppy522/moneyflow-personal-finance?display_name=tag)](https://github.com/floppy522/moneyflow-personal-finance/releases/tag/v0.1.0)
+[![License](https://img.shields.io/github/license/floppy522/moneyflow-personal-finance)](LICENSE)
 
 MoneyFlow is privately deployed. No public demo is exposed because it processes personal financial data; this repository, its tests, and the synthetic previews below are the review surface.
 
@@ -137,7 +134,7 @@ Not yet implemented:
 
 ## Author
 
-**Valeriy Malov** — Product Manager with strong technical depth.
+**Valeriy Malov** — Technical Project Manager with product and delivery ownership.
 
 I owned the product problem, requirements, prioritization, technical product decisions, acceptance criteria, and release process. Implementation was completed with AI coding agents through specification-driven, test-driven, and review-gated workflows. I remained accountable for scope, trade-offs, verification, and production readiness.
 
