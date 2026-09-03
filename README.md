@@ -2,7 +2,7 @@
 
 > Capture personal finances in Telegram. Understand them in the browser.
 
-[![CI](https://github.com/floppy522/Finance-project/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/floppy522/Finance-project/actions/workflows/ci.yml?query=branch%3Amain)
+[![CI](https://github.com/floppy522/moneyflow-personal-finance/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/floppy522/moneyflow-personal-finance/actions/workflows/ci.yml?query=branch%3Amain)
 ![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React + TypeScript](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=111111)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
