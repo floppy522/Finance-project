@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">MoneyFlow social preview</title>
+  <desc id="desc">MoneyFlow title beside synthetic Telegram capture and browser review screens.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#172235"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#020617" flood-opacity=".45"/>
+    </filter>
+    <clipPath id="browser-clip">
+      <rect x="570" y="150" width="650" height="430" rx="18"/>
+    </clipPath>
+    <clipPath id="phone-clip">
+      <rect x="390" y="220" width="260" height="360" rx="22"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <rect x="64" y="72" width="6" height="142" rx="3" fill="#38bdf8"/>
+
+  <g font-family="DejaVu Sans, Arial, sans-serif" fill="#f8fafc">
+    <text x="96" y="136" font-size="66" font-weight="700" letter-spacing="-2">MoneyFlow</text>
+    <text x="96" y="194" font-size="22" font-weight="400" fill="#cbd5e1">Telegram capture → browser review</text>
+  </g>
+
+  <rect x="568" y="148" width="654" height="434" rx="20" fill="#f5f7fb" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+  <g clip-path="url(#browser-clip)">
+    <svg x="570" y="150" width="650" height="430" viewBox="95 70 1260 800" preserveAspectRatio="xMidYMid slice">
+      <image xlink:href="web-category-review.svg" x="0" y="0" width="1440" height="900"/>
+    </svg>
+  </g>
+
+  <rect x="388" y="218" width="264" height="364" rx="24" fill="#eef4fb" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+  <g clip-path="url(#phone-clip)">
+    <svg x="390" y="220" width="260" height="360" viewBox="75 130 570 770" preserveAspectRatio="xMidYMid slice">
+      <image xlink:href="telegram-batch-input.svg" x="0" y="0" width="720" height="900"/>
+    </svg>
+  </g>
+</svg>
